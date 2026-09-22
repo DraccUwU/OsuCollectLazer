@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# Windows batch files want CRLF
+*.bat text eol=crlf
+
+# keep binaries alone
+*.osz binary
+*.realm binary

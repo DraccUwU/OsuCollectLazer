@@ -1,0 +1,20 @@
+# downloaded collections — huge, local only
+collections/
+
+# local staging leftovers
+.import-staging/
+.lazer-import/
+
+# python
+__pycache__/
+*.py[cod]
+
+# .NET build output
+tools/LazerDb/bin/
+tools/LazerDb/obj/
+
+# editors / OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

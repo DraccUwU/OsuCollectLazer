@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OsuCollectLazer — osu!collector → osu!lazer</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">o!c</span>
+    <div>
+      <h1>OsuCollectLazer</h1>
+      <p class="sub">osu!collector collections → osu!lazer, one click</p>
+    </div>
+  </div>
+  <div class="head-right">
+    <div id="lazer-pill" class="pill pill-muted">lazer: checking…</div>
+    <button id="btn-settings" class="ghost">Settings</button>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Find a collection</h2>
+    <div class="row">
+      <input id="q" type="search" placeholder="search osu!collector (aim, tech, stream, 4k…)" />
+      <select id="sort">
+        <option value="">relevance</option>
+        <option value="osuCount">osu!std count</option>
+        <option value="maniaCount">mania count</option>
+        <option value="taikoCount">taiko count</option>
+        <option value="catchCount">ctb count</option>
+      </select>
+      <button id="btn-search">Search</button>
+    </div>
+    <div class="row">
+      <input id="ref" placeholder="…or paste a collection URL / ID (https://osucollector.com/collections/1234)" />
+      <button id="btn-fetch" class="ghost">Fetch</button>
+    </div>
+    <div id="results" class="grid"></div>
+    <div id="pager" class="row right hidden">
+      <button id="btn-prev" class="ghost">‹ prev</button>
+      <span id="page-label" class="muted"></span>
+      <button id="btn-next" class="ghost">next ›</button>
+    </div>
+    <div id="detail" class="detail hidden"></div>
+  </section>
+
+  <section class="card">
+    <h2>Activity <span id="job-count" class="muted"></span></h2>
+    <div id="jobs"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Library <span class="muted" id="lib-dir"></span></h2>
+      <button id="btn-purge" class="ghost small danger">Delete all downloads</button>
+    </div>
+    <div id="lib-pipeline" class="muted" style="margin:-4px 0 10px"></div>
+    <div id="library"></div>
+  </section>
+</main>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3 id="modal-title"></h3>
+      <button id="modal-close" class="ghost">✕</button>
+    </div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>LazerDb</AssemblyName>
+    <RootNamespace>LazerDb</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- pinned on purpose: the realm schema version must match the installed osu!lazer
+         build or the tool refuses to open the database (see Program.cs) -->
+    <PackageReference Include="ppy.osu.Game" Version="2026.916.0" />
+    <PackageReference Include="System.Reflection.MetadataLoadContext" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>
