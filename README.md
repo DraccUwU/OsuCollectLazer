@@ -92,6 +92,7 @@ Measured on this machine (86-map and 89-map collections), from the app's own job
 |---|---|
 | hand-off to the game (`ipc.py`, straight pipe writes) | **600–680 maps/s** — 89 maps in 0.14 s |
 | lazer's own import, per IPC message | **~1–2 maps/s** (lazer is the slow half) |
+| **direct import** (`import_transport: direct`, game closed) | **~5–6 maps/s** on small batches, scales with cores — 12 maps in 2.2 s |
 | lazer's import, folder import via the wizard | one task, imported with `Parallel.ForEachAsync` over all maps |
 
 So the launcher was never the bottleneck: a batch of 20 paths costs ~0.34 s of process
@@ -114,6 +115,28 @@ fix the wall-clock picture:
 If you want the game to import maps in parallel (cores, not one at a time), that is the
 `wizard` mode: lazer's folder import puts every map in one `Import` call, which is the
 only path that runs `Parallel.ForEachAsync`. It costs the in-game clicks described above.
+
+### `import_transport: direct` — the fast one (needs the game closed)
+
+The helper (`tools/LazerDb --beatmaps-from <list> --parallel N`) runs lazer's own
+`BeatmapImporter` over the whole batch with `Parallel.ForEachAsync`, writing straight into
+lazer's file store and realm — the same code the import screen uses, minus the screen.
+Measured ~5–6 maps/s on a 12-map batch and it scales with cores, versus ~1 map/s through
+the running game. It also deletes each archive it imports (`ShouldDeleteArchive` for
+`.osz`), so it doubles as the "delete after import" step.
+
+Caveats, all handled automatically:
+
+* the game must be **closed** (two writers on one realm); if it is running the job logs
+  `direct import needs osu!lazer closed` and uses the IPC pipe for that batch instead,
+* it needs `delete_maps_after_import` (the importer removes the archives it takes, so
+  "keep the library" can't use it) — that combination falls back to the pipe too,
+* if the helper fails for any reason the batch is retried over the pipe, and files whose
+  import *failed* are never deleted (they are named in the helper's report).
+
+`LazerDb --check-archive <file.osz>` explains why a particular archive won't import (it
+prints what SharpCompress and lazer's own reader see) — useful when a mirror serves
+something that unzips in 7-zip but not in lazer.
 
 Downloaded collections land in `Documents\OsuCollectLazer\collections\<name>-<id>\`:
 
@@ -206,10 +229,11 @@ app/
   batch.py         stages a collection for lazer's import screen (wizard mode)
   library.py       download folder scanning / import state
   web/             the UI (vanilla HTML/CSS/JS)
-tools/LazerDb/     small .NET console app: LegacyCollectionImporter against client.realm
+tools/LazerDb/     small .NET console app: LegacyCollectionImporter + parallel BeatmapImporter
 tests/test_collectiondb.py   14 checks incl. byte-identity with ppy/osu's own fixture
 tests/test_importlog.py      12 checks for the import-confirmation watcher
 tests/test_ipc.py            8 checks for the pipe framing + message type
+tests/test_lazerdb.py        13 checks for the direct-import plumbing
 ```
 
 ## Notes from building this
@@ -231,6 +255,14 @@ tests/test_ipc.py            8 checks for the pipe framing + message type
   leaves the listener unusable — every later send fails with `ERROR_PIPE_BUSY` (231) and
   even `osu!.exe <file>` times out with `IPCTimeoutException`, until the game is
   restarted. Never write a "is it listening?" probe; send a real frame or nothing.
+* **Importing maps outside the game needs the ruleset assemblies.** Without them the
+  legacy `.osu` decoder cannot instantiate a game mode and *every* map fails to parse —
+  which surfaces as `No valid beatmap files found in the beatmap archive`, pointing at
+  the archive instead of the missing rulesets (that message is thrown when the parsed
+  beatmap list comes out empty, not when the zip is bad). Hence the four
+  `ppy.osu.Game.Rulesets.*` package references in `tools/LazerDb`.
+* An archive that already exists in lazer counts as imported (lazer's "skip import"
+  path) and still gets deleted — that is how a re-run over the same folder works.
 * **Deleting is gated on lazer's own log**: files are only removed once the confirmed +
   failed counts cover the batch, so an import that silently didn't happen leaves the
   archives in place.

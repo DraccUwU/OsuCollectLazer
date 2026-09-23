@@ -23,3 +23,5 @@ jobs:
         run: python tests/test_importlog.py
       - name: IPC pipe framing + message type
         run: python tests/test_ipc.py
+      - name: direct-import plumbing
+        run: python tests/test_lazerdb.py

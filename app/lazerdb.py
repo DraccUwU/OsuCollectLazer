@@ -15,6 +15,7 @@ Safety:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -138,7 +139,7 @@ def backup_realm(data_dir: Path | None = None) -> Path | None:
     return target
 
 
-def _run(args: list[str]) -> tuple[int, dict, str]:
+def _run(args: list[str], timeout: float = TIMEOUT) -> tuple[int, dict, str]:
     helper = helper_path()
     if not helper:
         raise RuntimeError("LazerDb helper is not built")
@@ -146,7 +147,7 @@ def _run(args: list[str]) -> tuple[int, dict, str]:
         [str(helper), *args],
         capture_output=True,
         text=True,
-        timeout=TIMEOUT,
+        timeout=timeout,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     try:
@@ -201,6 +202,85 @@ def write_collection(collection_db: Path, data_dir: Path | None = None, *, backu
     payload["backup"] = str(backup_path) if backup_path else None
     payload["changed"] = changed
     return payload
+
+
+def import_list_file(paths, directory: Path | None = None) -> Path:
+    """Write the helper's `--beatmaps-from` list (one absolute path per line)."""
+    directory = Path(directory) if directory is not None else config.app_dir() / "import-lists"
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"beatmaps-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.txt"
+    target.write_text("".join(f"{Path(p).resolve()}\n" for p in paths), encoding="utf-8")
+    return target
+
+
+def import_beatmaps(
+    paths,
+    *,
+    data_dir: Path | None = None,
+    parallel: int | None = None,
+    timeout: float | None = None,
+) -> dict:
+    """Import `.osz` archives straight into lazer's store + realm, in parallel.
+
+    This runs lazer's own `BeatmapImporter` in the helper process, with
+    `Parallel.ForEachAsync` over the whole batch — the same code path the game's import
+    screen uses, which is the only one that imports maps in parallel (feeding the
+    *running* game one path at a time is serial, ~1 map/s). The importer also deletes
+    each archive it imports (`ShouldDeleteArchive` for .osz), which is what the app
+    wants when it is set to delete maps after import.
+
+    The game must be closed: both processes write the same realm and file store.
+
+    Returns {requested, imported, failed, seconds, errors}.
+    """
+    data_dir = data_dir or lazer.data_dir()
+    if not data_dir:
+        raise RuntimeError("lazer data directory not found")
+    status = version_status()
+    if not status.get("available"):
+        raise RuntimeError(f"cannot import beatmaps directly: {status.get('reason')}")
+
+    paths = [Path(p) for p in paths]
+    if not paths:
+        return {"requested": 0, "imported": 0, "failed": 0, "seconds": 0.0, "errors": []}
+
+    missing = [str(p) for p in paths if not p.is_file()]
+    if missing:
+        raise RuntimeError(f"{len(missing)} archive(s) missing, first: {missing[0]}")
+
+    list_file = import_list_file(paths)
+    args = ["--data-dir", str(data_dir), "--beatmaps-from", str(list_file)]
+    if parallel:
+        args += ["--parallel", str(max(1, int(parallel)))]
+    if timeout is None:
+        timeout = max(600.0, 60.0 + 6.0 * len(paths))
+
+    try:
+        code, payload, err = _run(args, timeout=timeout)
+    finally:
+        try:
+            list_file.unlink()
+        except OSError:
+            pass
+
+    if not payload:
+        raise RuntimeError(err or f"the import helper exited {code} without a report")
+
+    imported = int(payload.get("beatmaps_imported") or 0)
+    failed = int(payload.get("beatmaps_failed") or 0)
+    errors = [str(e) for e in (payload.get("errors") or [])]
+    if code != 0 and imported == 0 and failed == 0:
+        raise RuntimeError(err or f"the import helper exited {code}")
+    return {
+        "requested": int(payload.get("beatmaps_requested") or len(paths)),
+        "imported": imported,
+        "failed": failed,
+        "seconds": float(payload.get("seconds") or 0.0),
+        "errors": errors,
+        "failed_files": [str(p) for p in (payload.get("failed_files") or [])],
+        "sets_before": payload.get("beatmap_sets_before"),
+        "sets_after": payload.get("beatmap_sets_after"),
+    }
 
 
 def collection_name(collection_db: Path) -> str | None:

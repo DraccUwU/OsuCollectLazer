@@ -385,6 +385,7 @@ function settingsModal() {
          <option value="auto" ${(s.import_transport || 'auto') === 'auto' ? 'selected' : ''}>IPC pipe (fast), fall back to osu!.exe</option>
          <option value="pipe" ${s.import_transport === 'pipe' ? 'selected' : ''}>only the IPC pipe</option>
          <option value="launcher" ${s.import_transport === 'launcher' ? 'selected' : ''}>only osu!.exe forwarders (old way)</option>
+         <option value="direct" ${s.import_transport === 'direct' ? 'selected' : ''}>direct into lazer's files, in parallel (~8× faster, needs the game closed)</option>
        </select></label>
      <div class="check"><input id="s-stream" type="checkbox" ${s.stream_import ? 'checked' : ''}><label for="s-stream">hand maps to the game while they download (lazer imports ~1 map/s, so this runs it during the transfer)</label></div>
      <label class="field"><span>launches at once / paths per launch</span><input id="s-pushpar" type="text" value="${esc(s.push_parallel ?? 8)}" style="width:60px"> <input id="s-pushbatch" type="text" value="${esc(s.push_batch_size ?? 20)}" style="width:60px"></label>

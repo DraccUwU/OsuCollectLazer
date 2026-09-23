@@ -47,6 +47,8 @@ DEFAULTS: dict = {
     #   "auto"     = write straight to lazer's IPC pipe, fall back to the launcher
     #   "pipe"     = only the pipe (fails loudly if unavailable)
     #   "launcher" = only `osu!.exe <paths…>` (one launcher process per batch)
+    #   "direct"   = import into lazer's store + realm with the helper, in parallel
+    #                (~8x the game's serial import, needs osu!lazer closed)
     "import_transport": "auto",
     # hand maps to the game while they are still downloading: lazer imports serially
     # (~1 map/s), so overlapping that with the transfer is free wall-clock time

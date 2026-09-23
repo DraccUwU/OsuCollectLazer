@@ -372,7 +372,15 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
                 pending = [f for f in sorted(path.glob("*.osz")) if f.name not in handled]
 
                 if pending and not skipped_import:
-                    if exe is None:
+                    effective = transport
+                    if effective == "direct":
+                        if not delete_after:
+                            JOBS.log(jid, "direct import would delete the archives — keeping the maps, so the IPC pipe it is")
+                            effective = "auto"
+                        elif lazer.is_running():
+                            JOBS.log(jid, "direct import needs osu!lazer closed — using the IPC pipe for this batch")
+                            effective = "auto"
+                    if effective != "direct" and exe is None:
                         exe = _ensure_lazer_running(jid)
 
                     window, rest = pending[:chunk], pending[chunk:]
@@ -384,60 +392,112 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
                             JOBS.log(jid, f"handing lazer {method} copies — the .osz library is kept")
 
                     sizes = {str(p): (p.stat().st_size if p.exists() else 0) for p in push_paths}
-                    marker = importlog.position()
-                    JOBS.update(jid, stage=f"handing {len(window)} maps to lazer")
+                    confirmed = failed = 0
+                    used = None
+                    seconds = 0.0
+                    failed_names: set[str] = set()
 
-                    push_result = lazer.hand_to_lazer(
-                        push_paths,
-                        exe,
-                        batch_size=batch_size,
-                        parallel=parallel,
-                        cancel=cancel,
-                        transport=transport,
-                    )
-                    handed = len(push_result["pushed"])
-                    used = push_result.get("transport")
-                    seconds = float(push_result.get("seconds") or 0.0)
-
-                    if not transport_logged:
-                        transport_logged = True
-                        if used == "pipe":
-                            JOBS.log(jid, "handing maps to the game's IPC pipe directly (no launcher processes)")
-                        elif push_result.get("reason"):
+                    if effective == "direct":
+                        try:
+                            direct = lazerdb.import_beatmaps(window)
+                            confirmed = int(direct["imported"])
+                            failed = int(direct["failed"])
+                            seconds = float(direct["seconds"] or 0.0)
+                            if not transport_logged:
+                                transport_logged = True
+                                JOBS.log(
+                                    jid,
+                                    "importing straight into lazer's store + database with the helper "
+                                    "(parallel, no game needed)",
+                                )
+                            rate = confirmed / seconds if seconds else 0.0
+                            sets = ""
+                            if direct.get("sets_before") is not None and direct.get("sets_after") is not None:
+                                sets = f" [lazer beatmapsets {direct['sets_before']} → {direct['sets_after']}]"
                             JOBS.log(
                                 jid,
-                                f"IPC pipe unavailable ({push_result['reason']}) — using osu!.exe forwarders",
+                                f"direct import: {confirmed} imported, {failed} failed in {seconds:.1f}s"
+                                + (f" ({rate:.1f} maps/s)" if seconds else "")
+                                + sets,
                             )
-                    JOBS.log(
-                        jid,
-                        f"handed {handed} maps to lazer in {seconds:.2f}s"
-                        + (f" ({handed / seconds:.0f} maps/s, {used})" if seconds else f" ({used})"),
-                    )
-                    for err in push_result["errors"][:3]:
-                        notes.append(str(err))
-                        JOBS.log(jid, str(err))
+                            for err in direct["errors"][:3]:
+                                notes.append(str(err))
+                                JOBS.log(jid, str(err))
+                            failed_names = set(direct.get("failed_files") or [])
+                            JOBS.update(
+                                jid,
+                                imported=imported + confirmed,
+                                stage=f"{confirmed}/{len(window)} imported directly",
+                            )
+                        except Exception as exc:
+                            notes.append(f"direct import failed: {exc}")
+                            JOBS.log(jid, f"direct import failed ({exc}) — falling back to the IPC pipe")
+                            effective = "auto"
+                            if exe is None:
+                                exe = _ensure_lazer_running(jid)
 
-                    JOBS.update(jid, stage=f"lazer importing {len(window)} maps")
+                    if effective != "direct":
+                        marker = importlog.position()
+                        JOBS.update(jid, stage=f"handing {len(window)} maps to lazer")
 
-                    def on_tick(state: dict, size: int = len(window), done_before: int = imported) -> None:
-                        JOBS.update(
-                            jid,
-                            imported=done_before + state.get("ok", 0),
-                            stage=f"{state.get('ok', 0)}/{size} confirmed by lazer",
+                        push_result = lazer.hand_to_lazer(
+                            push_paths,
+                            exe,
+                            batch_size=batch_size,
+                            parallel=parallel,
+                            cancel=cancel,
+                            transport=transport,
                         )
+                        handed = len(push_result["pushed"])
+                        used = push_result.get("transport")
+                        seconds = float(push_result.get("seconds") or 0.0)
 
-                    state = importlog.wait_for_imports(
-                        handed or len(window), marker, timeout=confirm_timeout, on_tick=on_tick
-                    )
-                    confirmed = state.get("ok", 0)
-                    failed = state.get("failed", 0)
+                        if not transport_logged:
+                            transport_logged = True
+                            if used == "pipe":
+                                JOBS.log(jid, "handing maps to the game's IPC pipe directly (no launcher processes)")
+                            elif push_result.get("reason"):
+                                JOBS.log(
+                                    jid,
+                                    f"IPC pipe unavailable ({push_result['reason']}) — using osu!.exe forwarders",
+                                )
+                        JOBS.log(
+                            jid,
+                            f"handed {handed} maps to lazer in {seconds:.2f}s"
+                            + (f" ({handed / seconds:.0f} maps/s, {used})" if seconds else f" ({used})"),
+                        )
+                        for err in push_result["errors"][:3]:
+                            notes.append(str(err))
+                            JOBS.log(jid, str(err))
+
+                        JOBS.update(jid, stage=f"lazer importing {len(window)} maps")
+
+                        def on_tick(state: dict, size: int = len(window), done_before: int = imported) -> None:
+                            JOBS.update(
+                                jid,
+                                imported=done_before + state.get("ok", 0),
+                                stage=f"{state.get('ok', 0)}/{size} confirmed by lazer",
+                            )
+
+                        state = importlog.wait_for_imports(
+                            handed or len(window), marker, timeout=confirm_timeout, on_tick=on_tick
+                        )
+                        confirmed = state.get("ok", 0)
+                        failed = state.get("failed", 0)
+
                     imported += confirmed
                     failed_imports += failed
                     accounted = confirmed + failed >= len(window)
 
                     if delete_after and accounted:
                         freed_here = 0
+                        kept = 0
                         for f in window:
+                            if f.name in failed_names or str(f) in failed_names:
+                                # the helper said this one did not import — never delete it
+                                notes.append(f"kept {f.name} (import failed, retry later)")
+                                kept += 1
+                                continue
                             size = sizes.get(str(f), 0)
                             if f.exists():
                                 try:
@@ -450,7 +510,9 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
                         freed += freed_here
                         JOBS.log(
                             jid,
-                            f"{confirmed} imported — deleted {len(window)} archives ({_fmt_bytes(freed_here)} freed)",
+                            f"{confirmed} imported — deleted {len(window) - kept} archives "
+                            f"({_fmt_bytes(freed_here)} freed)"
+                            + (f", kept {kept} that failed" if kept else ""),
                         )
                     elif delete_after:
                         notes.append(
