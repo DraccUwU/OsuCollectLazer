@@ -12,53 +12,56 @@
     <span class="logo">o!c</span>
     <div>
       <h1>OsuCollectLazer</h1>
-      <p class="sub">osu!collector collections → osu!lazer, one click</p>
+      <p class="sub">osu!collector → osu!lazer, one click</p>
     </div>
   </div>
   <div class="head-right">
-    <div id="lazer-pill" class="pill pill-muted">lazer: checking…</div>
-    <button id="btn-settings" class="ghost">Settings</button>
+    <div id="lazer-pill" class="pill pill-muted" title="checking osu!lazer…"><span class="dot"></span>checking…</div>
+    <button id="btn-how" class="ghost small" title="what one click does">?</button>
+    <button id="btn-settings" class="ghost small">Settings</button>
   </div>
 </header>
 
 <main>
   <section class="card">
-    <h2>Find a collection</h2>
-    <div class="row">
-      <input id="q" type="search" placeholder="search osu!collector (aim, tech, stream, 4k…)" />
-      <select id="sort">
+    <div class="card-head">
+      <h2><span class="t">Find a collection</span></h2>
+      <select id="sort" title="how search results are ranked">
         <option value="">relevance</option>
-        <option value="osuCount">osu!std count</option>
-        <option value="maniaCount">mania count</option>
-        <option value="taikoCount">taiko count</option>
-        <option value="catchCount">ctb count</option>
+        <option value="osuCount">osu!std</option>
+        <option value="maniaCount">mania</option>
+        <option value="taikoCount">taiko</option>
+        <option value="catchCount">ctb</option>
       </select>
+    </div>
+    <div class="row">
+      <input id="q" type="search" placeholder="search osu!collector — aim, tech, stream, 4k…" />
       <button id="btn-search">Search</button>
     </div>
     <div class="row">
-      <input id="ref" placeholder="…or paste a collection URL / ID (https://osucollector.com/collections/1234)" />
+      <input id="ref" placeholder="…or paste a collection link or ID" />
       <button id="btn-fetch" class="ghost">Fetch</button>
     </div>
     <div id="results" class="grid"></div>
     <div id="pager" class="row right hidden">
-      <button id="btn-prev" class="ghost">‹ prev</button>
+      <button id="btn-prev" class="ghost small">‹ prev</button>
       <span id="page-label" class="muted"></span>
-      <button id="btn-next" class="ghost">next ›</button>
+      <button id="btn-next" class="ghost small">next ›</button>
     </div>
     <div id="detail" class="detail hidden"></div>
   </section>
 
   <section class="card">
-    <h2>Activity <span id="job-count" class="muted"></span></h2>
+    <h2><span class="t">Activity</span> <span id="job-count" class="muted"></span></h2>
     <div id="jobs"></div>
   </section>
 
   <section class="card">
     <div class="card-head">
-      <h2>Library <span class="muted" id="lib-dir"></span></h2>
-      <button id="btn-purge" class="ghost small danger">Delete all downloads</button>
+      <h2><span class="t">Library</span> <span class="path" id="lib-dir"></span></h2>
+      <button id="btn-purge" class="ghost small danger" title="delete everything the app downloaded">Delete downloads…</button>
     </div>
-    <div id="lib-pipeline" class="muted" style="margin:-4px 0 10px"></div>
+    <div id="lib-pipeline" class="chips"></div>
     <div id="library"></div>
   </section>
 </main>
@@ -67,11 +70,13 @@
   <div class="modal-box">
     <div class="modal-head">
       <h3 id="modal-title"></h3>
-      <button id="modal-close" class="ghost">✕</button>
+      <button id="modal-close" class="ghost small">✕</button>
     </div>
     <div id="modal-body"></div>
   </div>
 </div>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script src="app.js"></script>
 </body>

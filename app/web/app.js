@@ -15,12 +15,28 @@ function fmtBytes(n) {
   return `${n.toFixed(i ? 1 : 0)} ${units[i]}`;
 }
 
+function fmtDate(value) {
+  if (!value) return '';
+  const seconds = typeof value === 'number' ? value : (value._seconds ?? value.seconds);
+  if (!seconds) return '';
+  const d = new Date(seconds * 1000);
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+}
+
 async function api(path, body) {
   const opts = body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {};
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
+}
+
+function toast(message, kind = '') {
+  const el = $('#toast');
+  el.textContent = message;
+  el.className = `toast show ${kind}`.trim();
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { el.className = 'toast'; }, 4200);
 }
 
 // ---------------------------------------------------------------- status
@@ -31,22 +47,28 @@ async function refreshStatus() {
     const pill = $('#lazer-pill');
     const l = s.lazer;
     const autoClose = s.settings.close_lazer_before_import !== false;
+    const version = l.version ? ` ${l.version}` : '';
     if (l.exe && l.running) {
       pill.className = autoClose ? 'pill pill-warn' : 'pill pill-bad';
-      pill.textContent = autoClose
-        ? `lazer ${l.version || ''} running — closed automatically before an import`
-        : `lazer ${l.version || ''} running — imports need it closed (auto-close is off)`;
+      pill.innerHTML = `<span class="dot ${autoClose ? 'warn' : 'bad'}"></span>lazer running`;
+      pill.title = autoClose
+        ? `osu!lazer${version} is open — it is closed automatically before an import`
+        : `osu!lazer${version} is open — imports need it closed and auto-close is off (Settings)`;
     } else if (l.exe) {
       pill.className = 'pill pill-ok';
-      pill.textContent = `lazer ${l.version || ''} not running — ready for imports`;
+      pill.innerHTML = '<span class="dot ok"></span>lazer ready';
+      pill.title = `osu!lazer${version} found, not running`;
     } else {
       pill.className = 'pill pill-bad';
-      pill.textContent = 'lazer not found';
+      pill.innerHTML = '<span class="dot bad"></span>lazer not found';
+      pill.title = 'osu!lazer was not found — set its path in Settings';
     }
     $('#lib-dir').textContent = s.download_dir;
   } catch (e) {
-    $('#lazer-pill').className = 'pill pill-bad';
-    $('#lazer-pill').textContent = 'server unreachable';
+    const pill = $('#lazer-pill');
+    pill.className = 'pill pill-bad';
+    pill.innerHTML = '<span class="dot bad"></span>server unreachable';
+    pill.title = e.message;
   }
 }
 
@@ -55,7 +77,7 @@ function renderResults(data) {
   const box = $('#results');
   state.hasNext = !!data.has_next;
   if (!data.results.length) {
-    box.innerHTML = `<p class="muted">No collections matched “${esc(data.query)}”.</p>`;
+    box.innerHTML = `<p class="muted">No matches for “${esc(data.query)}”.</p>`;
     return;
   }
   box.innerHTML = data.results
@@ -63,11 +85,11 @@ function renderResults(data) {
       (r) => `<div class="item">
         <div class="title">${esc(r.name)}</div>
         <div class="meta">id ${r.id}${r.favourites ? ` · ★ ${r.favourites}` : ''}</div>
-        <div class="meta">${esc((r.snippet || '').slice(0, 130))}</div>
+        ${r.snippet ? `<div class="meta clamp2">${esc(r.snippet.slice(0, 130))}</div>` : ''}
         <div class="actions">
           <button class="small" data-fetch="${r.id}">Open</button>
           <button class="small ghost" data-download="${r.id}">Download</button>
-          <a class="small" style="color:var(--muted);align-self:center" href="${esc(r.url)}" target="_blank" rel="noreferrer">site ↗</a>
+          <a class="link" href="${esc(r.url)}" target="_blank" rel="noreferrer" title="open on osu!collector">↗</a>
         </div>
       </div>`
     )
@@ -98,7 +120,7 @@ async function fetchRef(ev) {
   const value = typeof ev === 'string' ? ev : $('#ref').value.trim();
   if (!value) return;
   $('#detail').classList.remove('hidden');
-  $('#detail').innerHTML = '<p class="muted">loading collection…</p>';
+  $('#detail').innerHTML = '<p class="muted">loading…</p>';
   try {
     const c = await api(`/api/collection?ref=${encodeURIComponent(value)}`);
     showDetail(c);
@@ -110,12 +132,12 @@ async function fetchRef(ev) {
 function showDetail(c) {
   const modes = Object.entries(c.modes || {})
     .filter(([, v]) => v)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join(' · ');
+    .map(([k, v]) => `<span class="chip">${esc(k)} ${v}</span>`)
+    .join('');
+  const updated = fmtDate(c.date_modified);
   $('#detail').innerHTML = `
     <h3>${esc(c.name)}</h3>
-    <div class="muted">by ${esc(c.uploader || 'unknown')} · id ${c.id}
-      ${c.date_modified ? ` · updated ${esc(String(c.date_modified).slice(0, 10))}` : ''}</div>
+    <div class="muted">by ${esc(c.uploader || 'unknown')} · id ${c.id}${updated ? ` · updated ${updated}` : ''}</div>
     <div class="kv">
       <div><b>${c.set_count}</b><span>beatmapsets</span></div>
       <div><b>${c.checksum_count}</b><span>difficulties</span></div>
@@ -123,13 +145,19 @@ function showDetail(c) {
       ${c.unsubmitted ? `<div><b>${c.unsubmitted}</b><span>not on osu! servers</span></div>` : ''}
       ${c.unknown ? `<div><b>${c.unknown}</b><span>unknown checksums</span></div>` : ''}
     </div>
-    ${modes ? `<div class="muted">${esc(modes)}</div>` : ''}
-    ${c.description ? `<p class="muted">${esc(c.description.slice(0, 400))}</p>` : ''}
-    <div class="row" style="margin-top:12px">
+    ${modes ? `<div class="chips">${modes}</div>` : ''}
+    ${c.description ? `<p class="muted clamp3" style="margin:11px 0 0">${esc(c.description.slice(0, 400))}</p>` : ''}
+    <div class="row" style="margin-top:13px">
       <button id="btn-dl">Download ${c.set_count} sets${state.settings.no_video ? ' (no video)' : ''}</button>
-      <a href="https://osucollector.com/collections/${c.id}" target="_blank" rel="noreferrer"><button class="ghost">Open on osu!collector</button></a>
+      <button id="btn-site" class="ghost">osu!collector ↗</button>
     </div>
-    <div class="note">One click: every map goes straight into lazer's files with lazer's own importer (in parallel) and each archive is deleted as it is taken, then the collection is written into lazer's database. osu!lazer is closed automatically if it is open.</div>`;
+    <div class="chips" style="margin-top:11px">
+      <span class="chip ghosty">direct import</span>
+      <span class="chip ghosty">in parallel</span>
+      <span class="chip ghosty">archives deleted as they land</span>
+      <span class="chip ghosty">game closed if open</span>
+    </div>`;
+  $('#btn-site').onclick = () => window.open(`https://osucollector.com/collections/${c.id}`, '_blank', 'noreferrer');
   $('#btn-dl').onclick = async () => {
     $('#btn-dl').disabled = true;
     $('#btn-dl').textContent = 'starting…';
@@ -137,7 +165,7 @@ function showDetail(c) {
       await api('/api/download', { ref: String(c.id) });
       refreshJobs();
     } catch (e) {
-      alert(`download failed to start: ${e.message}`);
+      toast(e.message, 'bad');
       $('#btn-dl').disabled = false;
       $('#btn-dl').textContent = 'retry download';
     }
@@ -151,7 +179,7 @@ function renderJobs(jobs) {
   state.running = active > 0;
   $('#job-count').textContent = active ? `· ${active} running` : jobs.length ? '' : '· nothing yet';
   if (!jobs.length) {
-    box.innerHTML = '<p class="muted">No downloads yet. Search above, then hit Download.</p>';
+    box.innerHTML = '<p class="muted">No downloads yet.</p>';
     return;
   }
   box.innerHTML = jobs
@@ -159,31 +187,54 @@ function renderJobs(jobs) {
       const total = j.total || 1;
       const done = j.done || 0;
       const pct = Math.min(100, Math.round((done / total) * 100));
-      const speed = j.speed ? ` · ${fmtBytes(j.speed)}/s` : '';
-      const counts = j.kind === 'download'
-        ? `${done}/${total} sets · ${j.ok || 0} ok · ${j.skipped || 0} cached · ${j.failed || 0} failed · ${fmtBytes(j.bytes)}${speed}`
-        : `${j.imported || 0} imported · ${j.deleted || 0} files deleted · ${fmtBytes(j.freed || 0)} freed${j.failed ? ` · ${j.failed} failed` : ''}`;
+      const dot = { done: 'ok', partial: 'warn', failed: 'bad' }[j.status] || '';
+      const word = { done: 'done', partial: 'partial', failed: 'failed', running: 'running', pending: 'queued', cancelled: 'cancelled' }[j.status] || j.status;
+      const chips = [];
+      if (j.kind === 'download') {
+        chips.push(`<span class="chip">${done}/${total} sets</span>`);
+        if (j.ok) chips.push(`<span class="chip ok">${j.ok} ok</span>`);
+        if (j.skipped) chips.push(`<span class="chip ghosty">${j.skipped} cached</span>`);
+        if (j.failed) chips.push(`<span class="chip bad">${j.failed} failed</span>`);
+        if (j.bytes) chips.push(`<span class="chip ghosty">${fmtBytes(j.bytes)}</span>`);
+        if (j.speed) chips.push(`<span class="chip ghosty">${fmtBytes(j.speed)}/s</span>`);
+      } else {
+        if (j.imported) chips.push(`<span class="chip ok">${j.imported} imported</span>`);
+        if (j.deleted) chips.push(`<span class="chip ghosty">${j.deleted} archives deleted</span>`);
+        if (j.freed) chips.push(`<span class="chip ghosty">${fmtBytes(j.freed)} freed</span>`);
+        if (j.failed) chips.push(`<span class="chip bad">${j.failed} failed</span>`);
+      }
+      const logLines = (j.log || []).map(esc);
       const errors = j.errors && Object.keys(j.errors).length
-        ? `<div class="log">${Object.entries(j.errors).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join('\n')}</div>`
+        ? Object.entries(j.errors).map(([k, v]) => `${esc(k)}: ${esc(v)}`)
+        : [];
+      const detail = errors.length || logLines.length
+        ? `<details class="more">
+             <summary>${errors.length ? `error log (${errors.length})` : `log (${logLines.length})`}</summary>
+             ${errors.length ? `<div class="log">${errors.join('\n')}</div>` : ''}
+             ${logLines.length ? `<div class="log">${logLines.slice(-40).join('\n')}</div>` : ''}
+           </details>`
         : '';
-      const statusColour = { done: 'var(--green)', partial: 'var(--yellow)', failed: 'var(--red)', running: 'var(--muted)', pending: 'var(--muted)', cancelled: 'var(--muted)' }[j.status] || 'var(--muted)';
       const actions = j.status === 'running' ? `<button class="small ghost" data-cancel="${j.id}">cancel</button>` : '';
       const footer = j.status !== 'running' && j.folder
-        ? `<div class="row" style="margin:8px 0 0">
+        ? `<div class="row" style="margin:10px 0 0;gap:6px">
              <button class="small" data-finalize="${esc(j.folder)}" title="import the maps into lazer in parallel, delete each archive as it lands, then write the collection">import now</button>
-             <button class="small ghost" data-writecoll="${esc(j.folder)}" title="write the collection entry straight into lazer's database">write collection</button>
+             <button class="small ghost" data-writecoll="${esc(j.folder)}" title="write the collection entry straight into lazer's database">collection</button>
              <button class="small ghost" data-open="${esc(j.folder)}">folder</button>
            </div>`
         : '';
       return `<div class="job">
         <div class="job-head">
-          <div><b>${esc(j.name || j.folder)}</b> <span class="muted">${j.kind} · <span style="color:${statusColour}">${esc(j.status)}</span> · ${j.elapsed ?? 0}s</span></div>
+          <div class="job-title">
+            <span class="dot ${dot}" title="${esc(j.status)}"></span>
+            <b>${esc(j.name || j.folder)}</b>
+            <span class="muted">${j.kind} · ${esc(word)} · ${j.elapsed ?? 0}s</span>
+          </div>
           <div>${actions}</div>
         </div>
-        <div class="bar"><i style="width:${pct}%"></i></div>
-        <div class="muted">${esc(counts)}${j.message ? ` — ${esc(j.message)}` : ''}</div>
-        ${j.log && j.log.length ? `<div class="log">${j.log.slice(-6).map(esc).join('\n')}</div>` : ''}
-        ${errors}
+        <div class="bar${j.kind === 'import' ? ' push' : ''}"><i style="width:${pct}%"></i></div>
+        <div class="chips">${chips.join('')}</div>
+        ${j.message ? `<div class="muted" style="margin-top:7px">${esc(j.message)}</div>` : ''}
+        ${detail}
         ${footer}
       </div>`;
     })
@@ -205,31 +256,32 @@ function renderLibrary(cols) {
     box.innerHTML = '<p class="muted">Nothing downloaded yet.</p>';
     return;
   }
-  box.innerHTML = `<table><thead><tr>
+  box.innerHTML = `<div class="table-wrap"><table><thead><tr>
       <th>collection</th><th>maps</th><th>collection entry</th><th></th>
     </tr></thead><tbody>
     ${cols
       .map((c) => {
-        const maps = c.maps_imported
-          ? `${c.maps_imported} imported${c.maps_deleted ? `<div class="muted">${c.maps_deleted} files deleted · ${fmtBytes(c.maps_freed)} freed</div>` : ''}`
-          : '<span class="muted">waiting to be imported</span>';
+        const maps = c.maps_imported ? `${c.maps_imported} imported` : 'not imported';
+        const deleted = c.maps_deleted
+          ? `<div class="muted">${c.maps_deleted} deleted · ${fmtBytes(c.maps_freed)}</div>`
+          : '';
         const coll = c.collection_in_lazer
-          ? `<span style="color:var(--green)">in lazer</span><div class="muted">${esc(Object.keys(c.collection_in_lazer).join(', '))}</div>`
-          : c.collection_imported ? '<span style="color:var(--green)">imported</span>'
-            : c.has_collection_db ? '<span style="color:var(--yellow)">ready</span>' : '<span class="muted">—</span>';
+          ? `<span class="chip ok"><span class="dot ok"></span>in lazer</span><div class="muted">${esc(Object.keys(c.collection_in_lazer).join(', '))}</div>`
+          : c.collection_imported ? '<span class="chip ok">imported</span>'
+            : c.has_collection_db ? '<span class="chip warn">ready</span>' : '<span class="muted">—</span>';
         return `<tr>
       <td><b>${esc(c.name)}</b><div class="muted">${c.collection_id ? `id ${c.collection_id} · ` : ''}${fmtBytes(c.size_bytes)}</div></td>
-      <td>${c.beatmapsets}${c.expected_sets ? ` / ${c.expected_sets}` : ''} .osz<div class="muted">${maps}</div></td>
+      <td>${c.beatmapsets}${c.expected_sets ? ` / ${c.expected_sets}` : ''}<div class="muted">${maps}</div>${deleted}</td>
       <td>${coll}</td>
-      <td><div class="row" style="margin:0">
-        <button class="small" data-finalize="${esc(c.folder)}" title="import the maps into lazer in parallel, delete each archive as it lands, then write the collection">import now</button>
-        <button class="small ghost" data-writecoll="${esc(c.folder)}" title="write the collection entry straight into lazer's database">write collection</button>
+      <td><div class="row">
+        <button class="small" data-finalize="${esc(c.folder)}" title="import the maps into lazer in parallel, delete each archive as it lands, then write the collection">import</button>
+        <button class="small ghost" data-writecoll="${esc(c.folder)}" title="write the collection entry straight into lazer's database">collection</button>
         <button class="small ghost" data-open="${esc(c.folder)}">folder</button>
       </div></td>
     </tr>`;
       })
       .join('')}
-    </tbody></table>`;
+    </tbody></table></div>`;
 }
 
 async function refreshLibrary() {
@@ -243,18 +295,21 @@ async function refreshLibrary() {
 function renderPipelineHint(p) {
   const box = $('#lib-pipeline');
   if (!box) return;
+  const chips = [];
   if (p.pipeline_mode !== 'auto') {
-    box.textContent = 'pipeline: download only — press "import now" on a collection when you want its maps in lazer';
+    chips.push('<span class="chip ghosty">download only</span>');
+    chips.push('<span class="chip ghosty">press “import” to put a collection into lazer</span>');
+    box.innerHTML = chips.join('');
     return;
   }
-  const parts = ["one click: maps go straight into lazer's files in parallel, each archive deleted as soon as it lands"];
-  if (!p.stream_import) parts.push('importing once the download finishes (streaming off)');
-  if (p.close_lazer_before_import) parts.push('osu!lazer is closed automatically when it is in the way');
-  if (p.collection_mode !== 'database') parts.push(`collection entries: ${p.collection_mode}`);
+  chips.push('<span class="chip ghosty">one click: download → import → collection</span>');
+  if (!p.stream_import) chips.push('<span class="chip ghosty">imports start after the download</span>');
+  if (p.close_lazer_before_import) chips.push('<span class="chip ghosty">osu!lazer closed automatically when in the way</span>');
+  if (p.collection_mode !== 'database') chips.push(`<span class="chip ghosty">collection entries: ${esc(p.collection_mode)}</span>`);
   if (p.lazerdb && p.lazerdb.available === false) {
-    parts.push(`⚠ direct import unavailable (${p.lazerdb.reason}) — build the helper with tools\\build.bat`);
+    chips.push(`<span class="chip bad" title="${esc(p.lazerdb.reason || '')}">direct import unavailable — run tools\\build.bat</span>`);
   }
-  box.textContent = parts.join(' · ');
+  box.innerHTML = chips.join('');
 }
 
 // ---------------------------------------------------------------- delete all
@@ -263,8 +318,14 @@ async function runPurge(body) {
   out.textContent = 'deleting…';
   try {
     const res = await api('/api/library/delete', body);
-    out.textContent = `deleted ${res.removed} item(s), freed ${fmtBytes(res.freed)}`
-      + (res.leftover && res.leftover.length ? ` — ${res.leftover.length} still in use (close lazer and retry)` : '');
+    const msg = `deleted ${res.removed} item(s), freed ${fmtBytes(res.freed)}`;
+    if (res.leftover && res.leftover.length) {
+      out.textContent = '';
+      toast(`${msg} — ${res.leftover.length} still in use (close lazer and retry)`, 'bad');
+    } else {
+      hideModal();
+      toast(msg, 'ok');
+    }
     const all = document.getElementById('purge-all');
     if (all) all.disabled = true;
     refreshLibrary();
@@ -279,19 +340,17 @@ async function purgeModal() {
   try {
     dry = await api('/api/library/delete', { scope: 'all', dry_run: true });
   } catch (e) {
-    return alert(e.message);
+    return toast(e.message, 'bad');
   }
   showModal(
-    'Delete downloaded data',
-    `<p class="muted">Everything the app downloaded into<br><code>${esc(dry.download_dir)}</code></p>
-     <div class="kv">
-       <div><b>${dry.removed}</b><span>collections</span></div>
-       <div><b>${fmtBytes(dry.freed)}</b><span>total on disk</span></div>
+    'Delete downloads',
+    `<div><code class="path">${esc(dry.download_dir)}</code></div>
+     <div class="chips" style="margin:12px 0">
+       <span class="chip">${dry.removed} item(s)</span>
+       <span class="chip">${fmtBytes(dry.freed)} on disk</span>
      </div>
-     <div class="note">Beatmaps already imported into lazer stay in lazer — this only clears the app's own files
-       (map archives, collection.db, bookkeeping). Your settings are kept.</div>
-     <div class="warn">Deleting is not reversible. The .osz files would have to be downloaded again.</div>
-     <div class="row right">
+     <div class="muted">Beatmaps already in lazer stay; settings are kept. Not reversible — .osz files would have to be downloaded again.</div>
+     <div class="row right" style="margin-top:13px">
        <button id="purge-all" class="danger-solid small">delete everything (${fmtBytes(dry.freed)})</button>
      </div>
      <div id="purge-out" class="muted"></div>`
@@ -307,46 +366,72 @@ function showModal(title, html) {
 }
 function hideModal() { $('#modal').classList.add('hidden'); }
 
+function howModal() {
+  showModal(
+    'How it works',
+    `<ol class="steps">
+       <li><b>Find</b> — search osu!collector, or paste a collection link.</li>
+       <li><b>Download</b> — mirrors race, every archive is verified and cached.</li>
+       <li><b>Import</b> — lazer's own importer takes the maps in parallel, and each archive is deleted as it lands.</li>
+       <li><b>Collection</b> — the entry is written into lazer's database, so it is in the game when you next open it.</li>
+     </ol>
+     <div class="muted">osu!lazer is closed automatically when it is in the way, and nothing to do in-game either way.</div>`
+  );
+}
+
 function settingsModal() {
   const s = state.settings;
   const pipeline = s.pipeline_mode || 'auto';
   const collMode = s.collection_mode || 'database';
   const mirrors = ['nerinyan', 'beatconnect', 'catboy', 'osu.direct', 'sayobot', 'nekoha', 'osudl', 'hinamizawa', 'nzbasic'];
+  const check = (id, label, checked, hint) =>
+    `<label class="check" title="${esc(hint)}"><input id="${id}" type="checkbox" ${checked ? 'checked' : ''}><span>${label}</span></label>`;
   showModal(
     'Settings',
-    `<label class="field"><span>download folder</span><input id="s-dir" type="text" value="${esc(s.download_dir)}"></label>
-     <label class="field"><span>concurrent downloads (mirrors throttle above ~12)</span><input id="s-conc" type="text" value="${esc(s.concurrency)}"></label>
-     <label class="field"><span>after a download finishes</span>
-       <select id="s-pipeline">
-         <option value="auto" ${pipeline === 'auto' ? 'selected' : ''}>import the maps into lazer and add the collection — one click, nothing to do in-game</option>
-         <option value="manual" ${pipeline === 'manual' ? 'selected' : ''}>download only (press “import now” in the Library when you want them in)</option>
-       </select></label>
-     <label class="field"><span>where the collection entry goes</span>
-       <select id="s-collmode">
-         <option value="database" ${collMode === 'database' ? 'selected' : ''}>straight into lazer's database (no in-game steps)</option>
-         <option value="off" ${collMode === 'off' ? 'selected' : ''}>don't add collections</option>
-       </select></label>
-     <label class="field"><span>maps per import wave</span><input id="s-chunk" type="text" value="${esc(s.import_chunk ?? 250)}"></label>
-     <div class="check"><input id="s-stream" type="checkbox" ${s.stream_import ? 'checked' : ''}><label for="s-stream">import each wave while the download is still running (hides the import time inside the transfer)</label></div>
-     <div class="check"><input id="s-close" type="checkbox" ${s.close_lazer_before_import ? 'checked' : ''}><label for="s-close">close osu!lazer automatically when it's running (imports write straight into its files, so it must not be open)</label></div>
-     <div class="note">Maps always go straight into lazer's files with lazer's own importer, in parallel, and each archive is deleted as soon as it lands. That is the only import path.</div>
-     <label class="field"><span>lazer executable (empty = auto-detect)</span><input id="s-exe" type="text" value="${esc(s.lazer_exe || '')}"></label>
-     <label class="field"><span>collection name prefix (e.g. “o!c - ”)</span><input id="s-prefix" type="text" value="${esc(s.collection_prefix || '')}"></label>
-     <div class="check"><input id="s-novideo" type="checkbox" ${s.no_video ? 'checked' : ''}><label for="s-novideo">download without video (smaller files)</label></div>
-     <div class="check"><input id="s-verify" type="checkbox" ${s.verify_zips ? 'checked' : ''}><label for="s-verify">verify every archive (slower, catches bad mirrors early)</label></div>
-     <label class="field" style="margin-top:10px"><span>enabled mirrors</span>
-       ${mirrors.map((m) => `<label class="check"><input type="checkbox" data-mirror="${m}" ${(s.mirrors || []).includes(m) ? 'checked' : ''}><span style="margin:0">${m}</span></label>`).join('')}
-       <button id="s-probe" class="small ghost" style="margin-top:6px">probe mirrors now</button>
-     </label>
-     <div id="s-probe-out" class="muted"></div>
+    `<div class="group" style="border-top:0;padding-top:0;margin-top:0">
+       <div class="group-title">Downloads</div>
+       <label class="field" title="where collections are downloaded"><span>folder</span><input id="s-dir" type="text" value="${esc(s.download_dir)}"></label>
+       <label class="field" title="mirrors throttle above ~12"><span>parallel downloads</span><input id="s-conc" type="text" value="${esc(s.concurrency)}"></label>
+       ${check('s-novideo', 'skip video', s.no_video, 'download without video — smaller files')}
+       ${check('s-verify', 'verify every archive', s.verify_zips, 'slower, catches bad mirrors early')}
+     </div>
+     <div class="group">
+       <div class="group-title">Import</div>
+       <label class="field" title="what happens when a download finishes"><span>after a download</span>
+         <select id="s-pipeline">
+           <option value="auto" ${pipeline === 'auto' ? 'selected' : ''}>import and add the collection</option>
+           <option value="manual" ${pipeline === 'manual' ? 'selected' : ''}>download only</option>
+         </select></label>
+       <div class="hint">imports write straight into lazer's files — osu!lazer is closed automatically when it is open.</div>
+       <label class="field" title="where the collection entry goes"><span>collection entry</span>
+         <select id="s-collmode">
+           <option value="database" ${collMode === 'database' ? 'selected' : ''}>into lazer's database</option>
+           <option value="off" ${collMode === 'off' ? 'selected' : ''}>don't add collections</option>
+         </select></label>
+       <label class="field" title="how many maps one import wave hands to lazer"><span>maps per wave</span><input id="s-chunk" type="text" value="${esc(s.import_chunk ?? 250)}"></label>
+       ${check('s-stream', 'import while downloading', s.stream_import, 'start importing waves while the download is still running — hides the import time inside the transfer')}
+       ${check('s-close', 'close osu!lazer automatically', s.close_lazer_before_import, 'imports write straight into its files, so the game must not be open')}
+       <label class="field" title="prefix for collection names in lazer"><span>collection name prefix</span><input id="s-prefix" type="text" value="${esc(s.collection_prefix || '')}" placeholder="none"></label>
+     </div>
+     <div class="group">
+       <div class="group-title">osu!lazer</div>
+       <label class="field" title="empty = find it automatically"><span>executable</span><input id="s-exe" type="text" value="${esc(s.lazer_exe || '')}" placeholder="auto-detect"></label>
+     </div>
+     <div class="group">
+       <div class="group-title">Mirrors <button id="s-probe" class="small ghost">probe</button></div>
+       <div class="mirrors">${mirrors.map((m) => `<label class="check" title="${m} — used for downloads when checked"><input type="checkbox" data-mirror="${m}" ${(s.mirrors || []).includes(m) ? 'checked' : ''}><span>${m}</span></label>`).join('')}</div>
+       <div id="s-probe-out" class="chips"></div>
+     </div>
      <div class="row right"><button id="s-save">Save</button></div>`
   );
   $('#s-probe').onclick = async () => {
-    $('#s-probe-out').textContent = 'probing…';
+    $('#s-probe-out').innerHTML = '<span class="chip ghosty">probing…</span>';
     try {
       const res = await api('/api/mirrors/probe', {});
-      $('#s-probe-out').textContent = 'fastest first: ' + res.order.map((o) => `${o.name} ${o.ms ?? 'n/a'}${o.ms ? 'ms' : ''}`).join(' · ');
-    } catch (e) { $('#s-probe-out').textContent = e.message; }
+      $('#s-probe-out').innerHTML = res.order
+        .map((o) => `<span class="chip${o.ms ? '' : ' bad'}">${esc(o.name)} ${o.ms ? `${o.ms} ms` : 'n/a'}</span>`)
+        .join('');
+    } catch (e) { $('#s-probe-out').innerHTML = `<span class="chip bad">${esc(e.message)}</span>`; }
   };
   $('#s-save').onclick = async () => {
     const enabled = [...document.querySelectorAll('[data-mirror]')].filter((el) => el.checked).map((el) => el.dataset.mirror);
@@ -368,9 +453,10 @@ function settingsModal() {
       const res = await api('/api/settings', { settings: patch });
       state.settings = res.settings;
       hideModal();
+      toast('settings saved', 'ok');
       refreshStatus();
       refreshLibrary();
-    } catch (e) { alert(e.message); }
+    } catch (e) { toast(e.message, 'bad'); }
   };
 }
 
@@ -378,7 +464,6 @@ function settingsModal() {
 document.addEventListener('click', async (ev) => {
   const t = ev.target.closest('[data-fetch],[data-download],[data-open],[data-cancel],[data-finalize],[data-writecoll]');
   if (!t) return;
-  const btn = t;
   try {
     if (t.dataset.fetch) return void fetchRef(t.dataset.fetch);
     if (t.dataset.download) {
@@ -394,8 +479,9 @@ document.addEventListener('click', async (ev) => {
     if (t.dataset.writecoll) {
       t.disabled = true; t.textContent = 'writing…';
       const res = await api('/api/collection/write', { folder: t.dataset.writecoll });
-      t.textContent = 'written ✔';
-      alert('collection in lazer: ' + JSON.stringify(res.changed));
+      t.textContent = 'collection ✔';
+      const changed = res.changed ? Object.keys(res.changed).length : 0;
+      toast(changed ? `collection added to lazer (${changed} mode(s))` : 'collection already up to date', 'ok');
       return void refreshLibrary();
     }
     if (t.dataset.open) return void api('/api/open', { folder: t.dataset.open });
@@ -404,7 +490,7 @@ document.addEventListener('click', async (ev) => {
       return void refreshJobs();
     }
   } catch (e) {
-    alert(e.message);
+    toast(e.message, 'bad');
   }
 });
 
@@ -415,6 +501,7 @@ $('#btn-prev').onclick = () => doSearch(Math.max(1, state.page - 1));
 $('#btn-fetch').onclick = () => fetchRef();
 $('#ref').addEventListener('keydown', (e) => { if (e.key === 'Enter') fetchRef(); });
 $('#btn-settings').onclick = settingsModal;
+$('#btn-how').onclick = howModal;
 $('#btn-purge').onclick = purgeModal;
 $('#modal-close').onclick = hideModal;
 $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') hideModal(); });
