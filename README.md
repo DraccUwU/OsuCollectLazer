@@ -39,11 +39,12 @@ own database while the helper does) — see [Closing the game](#closing-the-game
 ## Tests
 
 ```bash
-python tests/test_collectiondb.py   # 14 checks, incl. byte-identity with ppy/osu's fixture
-python tests/test_lazerdb.py        # 13 checks for the import plumbing
+python tests/test_collectiondb.py    # 14 checks, incl. byte-identity with ppy/osu's fixture
+python tests/test_lazerdb.py         # 13 checks for the import plumbing
+python tests/test_server_safety.py   # 21 checks: request validation, delete and write guards
 ```
 
-Both also run on every push in CI (`.github/workflows/tests.yml`).
+All of them run on every push in CI (`.github/workflows/tests.yml`).
 
 ## What it does
 
@@ -108,7 +109,14 @@ closes it for you (`close osu!lazer automatically` in Settings, on by default):
 
 Turn the setting off and imports instead refuse to start while the game is running (the
 job stops with `close osu!lazer automatically is turned off`, and the archives stay on
-disk) — nothing is ever deleted on a failed import.
+disk) — nothing is ever deleted on a failed import. The same rule covers the collection
+entry: the realm is only written with the game closed (re-checked right before the write,
+in case the game was opened again mid-download), so **write collection** either closes the
+game or answers 409.
+
+Failed imports are kept, not deleted: the archive stays on disk for a retry and is named
+in the job log (`kept <file> (import failed — the file stays for a retry)`), while the
+archives lazer actually took are removed and their size counted as freed.
 
 `LazerDb --check-archive <file.osz>` explains why a particular archive won't import (it
 prints what SharpCompress and lazer's own reader see) — useful when a mirror serves
@@ -144,7 +152,11 @@ download directory — map archives, `collection.db`, bookkeeping. Beatmaps alre
 lazer stay there, and the app's settings are never touched.
 
 It refuses to run while a download or import job is still going (409), can be limited to a
-single folder, and has a server-side dry-run mode.
+single folder (a collection folder *inside* the download directory — the root itself is
+refused, and a single-collection delete never sweeps the root), and has a server-side
+dry-run mode. The API takes JSON requests only (`Content-Type: application/json`), refuses
+cross-origin callers, and requires `scope` to be stated explicitly: a request that forgets
+it is rejected (400) instead of quietly clearing the library.
 
 ```bash
 curl -X POST localhost:8765/api/library/delete -H 'Content-Type: application/json' \

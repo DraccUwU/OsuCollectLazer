@@ -11,7 +11,14 @@
 
   <ItemGroup>
     <!-- pinned on purpose: the realm schema version must match the installed osu!lazer
-         build or the tool refuses to open the database (see Program.cs) -->
+         build or the tool refuses to open the database (see Program.cs).
+
+         NuGet flags the transitive AutoMapper 13.0.1 (CVE-2026-32933, GHSA-rvv3-g6hj-g44x:
+         a stack-overflow DoS when mapping a caller-supplied object graph ~25k levels deep).
+         It stays pinned: ppy/osu still depends on 13.0.1 in its newest release, the fix only
+         landed in the 15.1.1/16.1.1 line (past AutoMapper's last free version), and this
+         tool maps only its own bounded realm models — nothing an archive can steer.
+         Recheck when ppy/osu moves. -->
     <PackageReference Include="ppy.osu.Game" Version="2026.916.0" />
     <!-- the rulesets are needed for beatmap parsing: without them loaded, the legacy
          .osu decoder cannot instantiate a game mode and every map fails to parse

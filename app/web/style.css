@@ -61,6 +61,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .pill-ok { color: var(--green); border-color: #2e5c37; background: #16241a; }
 .pill-bad { color: var(--red); border-color: #5c2e2e; background: #241616; }
 .pill-muted { color: var(--muted); }
+.pill-warn { color: var(--yellow); border-color: #5c4a2e; background: #241f16; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
 .item {
   background: var(--card2); border: 1px solid var(--line); border-radius: 11px; padding: 11px;

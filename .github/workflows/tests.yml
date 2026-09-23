@@ -21,3 +21,5 @@ jobs:
         run: python tests/test_collectiondb.py
       - name: import plumbing (helper gate, request validation)
         run: python tests/test_lazerdb.py
+      - name: server safety (request validation, delete and write guards)
+        run: python tests/test_server_safety.py

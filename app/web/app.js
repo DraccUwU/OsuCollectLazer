@@ -30,12 +30,15 @@ async function refreshStatus() {
     state.settings = s.settings;
     const pill = $('#lazer-pill');
     const l = s.lazer;
+    const autoClose = s.settings.close_lazer_before_import !== false;
     if (l.exe && l.running) {
-      pill.className = 'pill pill-ok';
-      pill.textContent = `lazer ${l.version || ''} running — imports land live`;
+      pill.className = autoClose ? 'pill pill-warn' : 'pill pill-bad';
+      pill.textContent = autoClose
+        ? `lazer ${l.version || ''} running — closed automatically before an import`
+        : `lazer ${l.version || ''} running — imports need it closed (auto-close is off)`;
     } else if (l.exe) {
-      pill.className = 'pill pill-bad';
-      pill.textContent = `lazer ${l.version || ''} not running`;
+      pill.className = 'pill pill-ok';
+      pill.textContent = `lazer ${l.version || ''} not running — ready for imports`;
     } else {
       pill.className = 'pill pill-bad';
       pill.textContent = 'lazer not found';
@@ -126,7 +129,7 @@ function showDetail(c) {
       <button id="btn-dl">Download ${c.set_count} sets${state.settings.no_video ? ' (no video)' : ''}</button>
       <a href="https://osucollector.com/collections/${c.id}" target="_blank" rel="noreferrer"><button class="ghost">Open on osu!collector</button></a>
     </div>
-    <div class="note">Maps are pushed into your running osu!lazer automatically when the download finishes. The collection entry then needs one trip through lazer's import screen — the app shows you exactly what to click.</div>`;
+    <div class="note">One click: every map goes straight into lazer's files with lazer's own importer (in parallel) and each archive is deleted as it is taken, then the collection is written into lazer's database. osu!lazer is closed automatically if it is open.</div>`;
   $('#btn-dl').onclick = async () => {
     $('#btn-dl').disabled = true;
     $('#btn-dl').textContent = 'starting…';

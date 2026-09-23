@@ -293,28 +293,37 @@ def _import_active(folder: Path) -> bool:
     return any(job["kind"] == "import" for job in JOBS.active_jobs(str(folder)))
 
 
-def _ensure_lazer_closed(jid: str) -> None:
-    """Direct imports need the game closed; close it gracefully unless that is turned off."""
+def _ensure_lazer_closed(jid: str | None = None) -> None:
+    """Every write into lazer's data needs the game closed; close it unless that is off.
+
+    `jid` is the job the close is narrated in — the manual "write collection" endpoint
+    has no job and passes nothing.
+    """
     if not lazer.is_running():
         return
     if not SETTINGS.get("close_lazer_before_import", True):
         raise RuntimeError(
             "osu!lazer is running and closing it automatically is turned off — close the game "
-            "(or re-enable that setting) and import again"
+            "(or re-enable that setting) and try again"
         )
-    JOBS.update(jid, stage="closing osu!lazer")
-    JOBS.log(jid, "osu!lazer is running — closing it, since imports write straight into its files")
+
+    def log(line: str) -> None:
+        if jid:
+            JOBS.log(jid, line)
+
+    if jid:
+        JOBS.update(jid, stage="closing osu!lazer")
+    log("osu!lazer is running — closing it, since the app writes straight into its files")
     ok, how = lazer.close_lazer()
     if not ok:
         raise RuntimeError(f"could not close osu!lazer: {how}")
     if how == "force-closed":
-        JOBS.log(
-            jid,
+        log(
             "osu!lazer ignored a normal close request (it was busy), so it was terminated — "
-            "anything unsaved in the game is gone",
+            "anything unsaved in the game is gone"
         )
     else:
-        JOBS.log(jid, "osu!lazer closed")
+        log("osu!lazer closed")
 
 
 def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> dict:
@@ -379,7 +388,11 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
                     confirmed = int(report["imported"])
                     failed = int(report["failed"])
                     seconds = float(report["seconds"] or 0.0)
-                    failed_names = set(report.get("failed_files") or [])
+                    # the helper reports resolved absolute paths while `window` can hold
+                    # relative ones — compare normalised identities, or a failed archive
+                    # whose path shapes differ would be deleted despite the failure
+                    failed_paths = {_norm(p) for p in (report.get("failed_files") or [])}
+                    failed_names = {Path(p).name for p in (report.get("failed_files") or [])}
 
                     rate = confirmed / seconds if seconds else 0.0
                     sets = ""
@@ -403,8 +416,9 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
                     freed_here = 0
                     kept = 0
                     for f in window:
-                        if f.name in failed_names or str(f) in failed_names:
+                        if _norm(f) in failed_paths or f.name in failed_names:
                             notes.append(f"kept {f.name} (import failed — the file stays for a retry)")
+                            JOBS.log(jid, notes[-1])
                             kept += 1
                             continue
                         size = sizes.get(str(f), 0)
@@ -451,6 +465,10 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
             if db_path.exists() and collection_mode == "database":
                 JOBS.update(jid, stage="writing the collection into lazer's database")
                 try:
+                    # the collection entry goes into the realm as well, and two writers on
+                    # one realm is a corrupt realm — close the game here too, in case it
+                    # was opened again while the download ran
+                    _ensure_lazer_closed(jid)
                     collection_result = lazerdb.write_collection(db_path)
                     changed = collection_result.get("changed") or {}
                     if collection_result.get("unchanged"):
@@ -499,9 +517,21 @@ def _download_root() -> Path:
     return config.download_dir(SETTINGS).resolve()
 
 
-def _inside_download_dir(path: Path) -> bool:
+def _is_collection_folder(path: Path) -> bool:
+    """True when `path` is a collection folder: strictly inside the download root.
+
+    The root itself does not qualify — every endpoint that takes a folder is aimed at
+    one collection, and `scope: all` is the only way to touch the whole root.
+    """
     try:
-        path.resolve().relative_to(_download_root())
+        resolved = path.resolve()
+    except OSError:
+        return False
+    root = _download_root()
+    if _norm(resolved) == _norm(root):
+        return False
+    try:
+        resolved.relative_to(root)
         return True
     except ValueError:
         return False
@@ -527,15 +557,20 @@ def delete_library(scope: str = "all", folder: str | None = None, dry_run: bool 
     """Delete downloaded data.
 
     Deletes whole collection folders (maps, collection.db, bookkeeping); `folder` limits
-    the operation to one collection and `dry_run` only reports sizes. Never touches
-    lazer's own data or the app's settings.
+    the operation to one collection folder — never the root — and `dry_run` only reports
+    sizes. Never touches lazer's own data or the app's settings.
     """
     root = _download_root()
     if folder:
         target = Path(folder)
-        if not _inside_download_dir(target):
-            raise PermissionError("folder is outside the download directory")
-        folders = [target] if target.is_dir() else []
+        if not _is_collection_folder(target):
+            raise PermissionError(
+                "folder must be a collection folder inside the download directory "
+                "(use scope 'all' to clear the whole library)"
+            )
+        if target.exists() and not target.is_dir():
+            raise ValueError(f"{target.name} is not a collection folder")
+        folders = [target] if target.is_dir() else []  # an already-deleted folder is a no-op
     else:
         folders = sorted(p for p in root.iterdir() if p.is_dir())
 
@@ -568,12 +603,13 @@ def delete_library(scope: str = "all", folder: str | None = None, dry_run: bool 
         else:
             removed += 1
 
-    # stray files sitting directly in the download root
-    for f in root.iterdir():
-        if not f.is_file():
-            continue
+    # stray files sitting directly in the download root belong to a whole-library
+    # delete; a single-collection delete must not sweep them
+    strays = [] if folder else [f for f in root.iterdir() if f.is_file()]
+    for f in strays:
         size = _path_size(f)
         if dry_run:
+            freed += size
             removed += 1
             continue
         try:
@@ -655,15 +691,18 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
         job = start_download(str(body.get("ref") or body.get("id") or ""))
         return 200, {"job": JOBS.list()[0], "started": True}
     if path == "/api/library/delete":
-        scope = str(body.get("scope") or "all")
-        if scope not in ("all",):
-            return 400, {"error": f"unknown scope {scope!r}"}
+        # no default: a request that does not name its scope must never delete anything
+        scope = str(body.get("scope") or "")
+        if scope != "all":
+            return 400, {"error": 'scope must be "all" — an explicit scope is required'}
         try:
             result = delete_library(
                 scope=scope,
                 folder=(str(body["folder"]) if body.get("folder") else None),
                 dry_run=bool(body.get("dry_run")),
             )
+        except ValueError as exc:
+            return 400, {"error": str(exc)}
         except PermissionError as exc:
             return 403, {"error": str(exc)}
         except RuntimeError as exc:
@@ -696,8 +735,8 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
         return 200, {"settings": SETTINGS}
     if path == "/api/finalize":
         folder = Path(str(body.get("folder") or ""))
-        if not _inside_download_dir(folder):
-            return 403, {"error": "folder is outside the download directory"}
+        if not _is_collection_folder(folder):
+            return 403, {"error": "folder must be a collection folder inside the download directory"}
         busy = JOBS.active_jobs(str(folder))
         if busy:
             return 409, {"error": f"{busy[0]['kind']} already running for that collection"}
@@ -707,11 +746,15 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
         return 200, _collections_payload()
     if path == "/api/collection/write":
         folder = Path(str(body.get("folder") or ""))
-        if not _inside_download_dir(folder):
-            return 403, {"error": "folder is outside the download directory"}
+        if not _is_collection_folder(folder):
+            return 403, {"error": "folder must be a collection folder inside the download directory"}
         db_path = folder / "collection.db"
         if not db_path.exists():
             return 400, {"error": "no collection.db in that folder yet"}
+        try:
+            _ensure_lazer_closed()
+        except RuntimeError as exc:
+            return 409, {"error": str(exc)}
         try:
             result = lazerdb.write_collection(db_path)
         except Exception as exc:
@@ -720,8 +763,8 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
         return 200, {"changed": result.get("changed"), "backup": result.get("backup")}
     if path == "/api/open":
         folder = Path(str(body.get("folder") or ""))
-        if not _inside_download_dir(folder):
-            return 403, {"error": "folder is outside the download directory"}
+        if not _is_collection_folder(folder):
+            return 403, {"error": "folder must be a collection folder inside the download directory"}
         if os.name == "nt":
             os.startfile(str(folder))  # noqa: S606 - local convenience
         else:
@@ -733,6 +776,52 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
 # ---------------------------------------------------------------------------
 # HTTP plumbing
 # ---------------------------------------------------------------------------
+_LOOPBACK_NAMES = {"127.0.0.1", "localhost", "[::1]"}
+
+
+def _host_allowed(host: str | None) -> bool:
+    """True when the request's Host names a loopback address (or is absent).
+
+    Checked for reads as well as writes: a page that DNS-rebinds to 127.0.0.1 carries its
+    own name in Host, and this app is only ever reached as `127.0.0.1` or `localhost`.
+    """
+    if not host:
+        return True
+    return host.rsplit(":", 1)[0].lower() in _LOOPBACK_NAMES
+
+
+def _origin_allowed(origin: str | None, host: str | None, port: int) -> bool:
+    """Same-origin check for state-changing requests to a loopback server.
+
+    Only the loopback names count. A page that DNS-rebinds to 127.0.0.1 is same-origin in
+    the browser and carries its *own* name in both headers, so nothing about the request
+    may be taken on trust: a present Host has to be a loopback name, and a present Origin
+    has to be one of the loopback origins for this port. Requests without either header
+    (curl, other local tools) still pass.
+    """
+    if not _host_allowed(host):
+        return False
+    if not origin:
+        return True
+    allowed = {f"http://{name}:{port}" for name in _LOOPBACK_NAMES}
+    return origin.rstrip("/").lower() in allowed
+
+
+def _static_file(rel: str) -> Path | None:
+    """The UI file for a request path, or None when it escapes the web directory.
+
+    Resolved and containment-checked, so `..` in any spelling (either separator) cannot
+    walk out of `app/web`: the static route serves the UI and nothing else.
+    """
+    try:
+        candidate = (WEB_DIR / rel).resolve()
+    except (OSError, ValueError):
+        return None
+    if not candidate.is_relative_to(WEB_DIR.resolve()):
+        return None
+    return candidate if candidate.is_file() else None
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "OsuCollectLazer"
 
@@ -764,17 +853,32 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _body(self) -> dict:
+        """The request's JSON body — or a ValueError.
+
+        Strict on purpose: a missing or malformed body must never be read as a valid
+        (and, on the delete endpoint, destructive) request. Requiring this Content-Type
+        doubles as the CSRF guard: a foreign page cannot send application/json without
+        a preflight, and nothing here ever approves one.
+        """
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         length = int(self.headers.get("Content-Length") or 0)
-        if not length:
-            return {}
-        raw = self.rfile.read(length)
+        if length <= 0:
+            raise ValueError("a JSON body is required")
+        if ctype != "application/json":
+            raise ValueError("Content-Type must be application/json for the local API")
         try:
-            return json.loads(raw.decode("utf-8"))
-        except Exception:
-            return {}
+            parsed = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid JSON body: {exc}") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("the request body must be a JSON object")
+        return parsed
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
+        if not _host_allowed(self.headers.get("Host")):
+            self._send(403, {"error": "requests must come from 127.0.0.1 or localhost"})
+            return
         query = parse_qs(parsed.query)
         if parsed.path.startswith("/api/"):
             try:
@@ -787,12 +891,22 @@ class Handler(BaseHTTPRequestHandler):
                 code, payload = 500, {"error": f"{type(exc).__name__}: {exc}", "trace": traceback.format_exc()[-800:]}
             self._send(code, payload)
             return
-        rel = parsed.path.lstrip("/") or "index.html"
-        self._send_file((WEB_DIR / rel).resolve())
+        target = _static_file(parsed.path.lstrip("/") or "index.html")
+        if target is None:
+            self.send_error(404)
+            return
+        self._send_file(target)
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        body = self._body()
+        if not _origin_allowed(self.headers.get("Origin"), self.headers.get("Host"), self.server.server_port):
+            self._send(403, {"error": "cross-origin request refused"})
+            return
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._send(400, {"error": str(exc)})
+            return
         try:
             code, payload = api_post(parsed.path, body)
         except KeyError:
