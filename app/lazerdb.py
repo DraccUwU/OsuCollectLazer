@@ -233,20 +233,20 @@ def import_beatmaps(
 
     Returns {requested, imported, failed, seconds, errors}.
     """
+    paths = [Path(p) for p in paths]
+    if not paths:
+        return {"requested": 0, "imported": 0, "failed": 0, "seconds": 0.0, "errors": [], "failed_files": []}
+
+    missing = [str(p) for p in paths if not p.is_file()]
+    if missing:
+        raise RuntimeError(f"{len(missing)} archive(s) missing, first: {missing[0]}")
+
     data_dir = data_dir or lazer.data_dir()
     if not data_dir:
         raise RuntimeError("lazer data directory not found")
     status = version_status()
     if not status.get("available"):
         raise RuntimeError(f"cannot import beatmaps directly: {status.get('reason')}")
-
-    paths = [Path(p) for p in paths]
-    if not paths:
-        return {"requested": 0, "imported": 0, "failed": 0, "seconds": 0.0, "errors": []}
-
-    missing = [str(p) for p in paths if not p.is_file()]
-    if missing:
-        raise RuntimeError(f"{len(missing)} archive(s) missing, first: {missing[0]}")
 
     list_file = import_list_file(paths)
     args = ["--data-dir", str(data_dir), "--beatmaps-from", str(list_file)]
