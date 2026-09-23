@@ -209,6 +209,64 @@ def _batches(files: list[Path], batch_size: int, max_chars: int = 8000):
         yield batch
 
 
+def hand_to_lazer(
+    files: list[Path],
+    exe: Path | None = None,
+    *,
+    batch_size: int = 20,
+    parallel: int = 8,
+    on_batch=None,
+    on_progress=None,
+    cancel=None,
+    transport: str = "auto",
+) -> dict:
+    """Give .osz paths to a running lazer, fastest route first.
+
+    `pipe`  — write straight to the game's IPC pipe (no process per batch; the
+              launcher's ~1-2 s cold start is what capped import speed before)
+    `launcher` — `osu!.exe <paths…>`, i.e. the old behaviour (also the fallback)
+
+    Returns a report with `transport`, `pushed` (list), `failed`, `batches`,
+    `seconds`, `errors` and — when it had to fall back — `reason`.
+    """
+    from . import ipc
+
+    fallback_reason: str | None = None
+
+    if transport in ("auto", "pipe"):
+        ok, reason = ipc.available()
+        if ok:
+            try:
+                result = ipc.send_paths(files, on_progress=on_progress, cancel=cancel)
+                return {
+                    "transport": "pipe",
+                    "pushed": result["sent"],
+                    "failed": result["failed"],
+                    "batches": 1,
+                    "seconds": result["seconds"],
+                    "errors": result["errors"],
+                    "reason": None,
+                }
+            except ipc.IpcStuck as exc:
+                # the launcher forwards through the same pipe, so falling back would
+                # only burn a 3s IPC timeout per file
+                raise RuntimeError(str(exc)) from exc
+            except ipc.IpcUnavailable as exc:
+                if transport == "pipe":
+                    raise RuntimeError(f"the game's IPC pipe is unavailable: {exc}") from exc
+                fallback_reason = str(exc)
+        else:
+            if transport == "pipe":
+                raise RuntimeError(f"the game's IPC pipe is unavailable: {reason}")
+            fallback_reason = reason
+
+    result = push_files(files, exe, batch_size=batch_size, parallel=parallel, on_batch=on_batch, cancel=cancel)
+    result["transport"] = "launcher"
+    result["reason"] = fallback_reason
+    result.setdefault("seconds", 0.0)
+    return result
+
+
 def push_files(
     files: list[Path],
     exe: Path | None = None,

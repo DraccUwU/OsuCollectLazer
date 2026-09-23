@@ -21,3 +21,5 @@ jobs:
         run: python tests/test_collectiondb.py
       - name: lazer import-log watcher
         run: python tests/test_importlog.py
+      - name: IPC pipe framing + message type
+        run: python tests/test_ipc.py

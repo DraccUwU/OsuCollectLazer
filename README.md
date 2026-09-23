@@ -48,8 +48,9 @@ Both also run on every push in CI (`.github/workflows/tests.yml`).
    public mirrors (nerinyan, beatconnect, catboy.best, osu.direct, sayobot, nekoha,
    osudl, hinamizawa), verifying each archive, resuming interrupted runs and skipping
    files that are already on disk.
-3. **Import the maps** — hands the archives to a running osu!lazer through lazer's own
-   IPC forward (starting the game first if needed). No drag-and-drop, no import screen.
+3. **Import the maps** — hands the archives to a running osu!lazer by writing import
+   messages straight into the game's own IPC pipe (starting the game first if needed).
+   No drag-and-drop, no import screen, and no `osu!.exe` launcher process per batch.
 4. **Delete them again** — as soon as lazer's log confirms an import, the `.osz` files
    are removed, so a huge collection never has to fit on disk twice. Space is freed
    batch by batch while the import is still running.
@@ -82,6 +83,37 @@ a drop at its window does nothing (and Windows refuses cross-process
 `PostMessage(WM_DROPFILES)` with `ERROR_INVALID_HANDLE` anyway). And a bare `collection.db`
 is accepted silently and ignored by the IPC forward — collections only enter through the
 realm, which is what step 5 does.
+
+## Import speed
+
+Measured on this machine (86-map and 89-map collections), from the app's own job log:
+
+| phase | rate |
+|---|---|
+| hand-off to the game (`ipc.py`, straight pipe writes) | **600–680 maps/s** — 89 maps in 0.14 s |
+| lazer's own import, per IPC message | **~1–2 maps/s** (lazer is the slow half) |
+| lazer's import, folder import via the wizard | one task, imported with `Parallel.ForEachAsync` over all maps |
+
+So the launcher was never the bottleneck: a batch of 20 paths costs ~0.34 s of process
+start-up, and the old code spent most of its wall time *waiting* for the game. Two things
+fix the wall-clock picture:
+
+* **`import_transport: auto`** — the app writes `[int32 length][UTF-8 JSON]` frames
+  (`{"Type": "<assembly-qualified ArchiveImportMessage>", "Value": {"Path": …}}`) to
+  `\\.\pipe\osu-framework-osu-lazer`, which is the same thing `osu!.exe` does after its
+  cold start, minus the cold start. The Type string includes the assembly version, so it
+  is read off the installed `osu.Game.dll` (`LazerDb --ipc-type`) instead of hardcoded.
+  A one-off note: the game binds **one** pipe instance — a client that connects and
+  never sends a complete frame wedges the listener until osu!lazer is restarted, so the
+  app never probes (see the `IpcStuck` guard in `app/ipc.py`).
+* **`stream_import: true`** — maps are handed over while they are still downloading, so
+  lazer's ~1 map/s import runs *during* the transfer instead of after it. A 51-map
+  collection: download 27 s, maps flowing to the game from second 3, everything imported,
+  deleted and the collection written 34 s after the click.
+
+If you want the game to import maps in parallel (cores, not one at a time), that is the
+`wizard` mode: lazer's folder import puts every map in one `Import` call, which is the
+only path that runs `Parallel.ForEachAsync`. It costs the in-game clicks described above.
 
 Downloaded collections land in `Documents\OsuCollectLazer\collections\<name>-<id>\`:
 
@@ -120,9 +152,9 @@ fastest, demoting ones that error. Observed on a 27-set collection: peak 18.6 MB
 median transfer 6.9 MB/s, 27/27 sets with zero failures. Per-run timeline (mirror, bytes,
 seconds) is in the job JSON at `/api/jobs`; live mirror stats at `/api/mirrors`.
 
-Handing the maps to lazer is fast too — the app runs up to 8 `osu!.exe` forwarders at once,
-20 paths each (Settings → "launches at once / paths per launch"); a 4-set collection goes
-from download to "imported and deleted" in ~3 seconds once the game is up.
+Handing the maps to lazer is fast too — straight into the game's IPC pipe, 600+ maps/s
+(see **Import speed** above); a 4-set collection goes from download to "imported and
+deleted" in ~3 seconds once the game is up.
 
 ## Deleting downloads
 
@@ -167,7 +199,8 @@ app/
   mirrors.py       mirror URL templates, rotation, per-mirror cooldowns
   downloader.py    parallel downloader, integrity checks, resume, stall guards
   collectiondb.py  legacy collection.db writer/reader (byte-exact, see tests)
-  lazer.py         lazer detection + IPC push (parallel forwarders, hardlink staging)
+  lazer.py         lazer detection + IPC hand-off (pipe first, launcher fallback)
+  ipc.py           direct client for the game's import pipe (no launcher process)
   importlog.py     watches lazer's database log to confirm imports before deleting
   lazerdb.py       writes collections into lazer's realm via tools/LazerDb (backup + verify)
   batch.py         stages a collection for lazer's import screen (wizard mode)
@@ -176,6 +209,7 @@ app/
 tools/LazerDb/     small .NET console app: LegacyCollectionImporter against client.realm
 tests/test_collectiondb.py   14 checks incl. byte-identity with ppy/osu's own fixture
 tests/test_importlog.py      12 checks for the import-confirmation watcher
+tests/test_ipc.py            8 checks for the pipe framing + message type
 ```
 
 ## Notes from building this
@@ -192,6 +226,11 @@ tests/test_importlog.py      12 checks for the import-confirmation watcher
   the marker from the right file — a marker taken from the previous run's log sees zero
   confirmations even though everything imported. `importlog.wait_for_log_after()` handles
   a game the app just launched, and `read_since()` follows to a newer file.
+* **lazer's IPC pipe is single-instance** (`new NamedPipeServerStream(name, PipeDirection.InOut, 1)`)
+  and accepts one connection at a time. Connecting and closing *without* sending a frame
+  leaves the listener unusable — every later send fails with `ERROR_PIPE_BUSY` (231) and
+  even `osu!.exe <file>` times out with `IPCTimeoutException`, until the game is
+  restarted. Never write a "is it listening?" probe; send a real frame or nothing.
 * **Deleting is gated on lazer's own log**: files are only removed once the confirmed +
   failed counts cover the batch, so an import that silently didn't happen leaves the
   archives in place.

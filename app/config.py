@@ -43,6 +43,14 @@ DEFAULTS: dict = {
     # launches run at once (the forwarder's cold start is the bottleneck, not the game)
     "push_batch_size": 20,
     "push_parallel": 8,
+    # how the maps reach the game:
+    #   "auto"     = write straight to lazer's IPC pipe, fall back to the launcher
+    #   "pipe"     = only the pipe (fails loudly if unavailable)
+    #   "launcher" = only `osu!.exe <paths…>` (one launcher process per batch)
+    "import_transport": "auto",
+    # hand maps to the game while they are still downloading: lazer imports serially
+    # (~1 map/s), so overlapping that with the transfer is free wall-clock time
+    "stream_import": True,
     # starting osu!lazer takes over the screen; allow turning the auto-launch off
     "auto_start_lazer": True,
     "mirrors": [

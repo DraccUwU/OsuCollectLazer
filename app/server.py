@@ -199,6 +199,17 @@ def start_download(ref: str) -> dict:
                 JOBS.log(jid, f"mirror probe → fastest first: {order}")
             except Exception as exc:
                 JOBS.log(jid, f"mirror probe skipped: {exc}")
+            # One-click pipeline: with streaming on, the maps are handed to the game as
+            # they land, so lazer's serial import (~1 map/s) runs *during* the download.
+            pipeline_mode = SETTINGS.get("pipeline_mode", "auto")
+            streaming = pipeline_mode == "auto" and bool(SETTINGS.get("stream_import", True))
+            if streaming:
+                try:
+                    start_finalize(str(folder), wait_for=lambda: _download_active(jid))
+                    JOBS.log(jid, "streaming import started — maps go to osu!lazer as they land")
+                except Exception as exc:
+                    JOBS.log(jid, f"streaming import skipped: {exc}")
+
             Downloader(pool, cancel).run(job)
             # write the collection entry + config marker once maps are on disk
             if job.counts()["ok"] + job.counts()["skipped"] > 0:
@@ -219,11 +230,14 @@ def start_download(ref: str) -> dict:
             JOBS.log(jid, job.message)
             mode = SETTINGS.get("pipeline_mode", "auto")
             if mode == "auto":
-                JOBS.log(jid, "one-click pipeline: importing maps, then writing the collection into lazer")
-                try:
-                    start_finalize(str(folder))
-                except Exception as exc:
-                    JOBS.log(jid, f"finalize skipped: {exc}")
+                if _import_active(folder):
+                    JOBS.log(jid, "import job still working through the maps — it writes the collection too")
+                else:
+                    JOBS.log(jid, "one-click pipeline: importing maps, then writing the collection into lazer")
+                    try:
+                        start_finalize(str(folder))
+                    except Exception as exc:
+                        JOBS.log(jid, f"finalize skipped: {exc}")
             elif mode == "wizard":
                 JOBS.log(jid, "map import mode: stage for lazer's import screen")
                 try:
@@ -275,9 +289,47 @@ def _fmt_bytes(n: float) -> str:
     return f"{n:.0f} B"
 
 
-def start_finalize(folder: str, *, skip_import: bool = False) -> dict:
+def _download_active(jid: str) -> bool:
+    """True while the download job for this collection is still running."""
+    job = JOBS.get(jid) or {}
+    return job.get("status") in ("pending", "running")
+
+
+def _import_active(folder: Path) -> bool:
+    return any(job["kind"] == "import" for job in JOBS.active_jobs(str(folder)))
+
+
+def _ensure_lazer_running(jid: str, exe: Path | None = None) -> Path:
+    """Make sure a lazer instance is up (starting it when allowed) with a watched log."""
+    exe = exe or lazer.find_lazer_exe(SETTINGS.get("lazer_exe") or None)
+    if not exe:
+        raise RuntimeError("osu!lazer executable not found")
+    if not lazer.is_running():
+        if not SETTINGS.get("auto_start_lazer", True):
+            raise RuntimeError("osu!lazer is not running — start the game, then press finish in lazer again")
+        JOBS.update(jid, stage="starting osu!lazer")
+        JOBS.log(jid, "osu!lazer is not running — starting it (it takes over the screen)")
+        launch_ts = time.time()
+        lazer.start_lazer(exe)
+        # the game writes its own <id>.database.log per run — wait for the new one, or
+        # every confirmation lands in a file nobody is reading
+        importlog.wait_for_log_after(launch_ts, timeout=120.0)
+    if not lazer.is_running():
+        raise RuntimeError("osu!lazer is not running and could not be started")
+    return exe
+
+
+def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> dict:
     """The one-click pipeline: maps into a running lazer, confirm, delete them, then
-    write the collection into lazer's database. No in-game steps at any point."""
+    write the collection into lazer's database. No in-game steps at any point.
+
+    `wait_for` (optional callable) keeps the job alive while it returns True, so the
+    maps are handed over *as they arrive* instead of after the download finishes:
+    lazer's own import is serial (about a map per second — one IPC message is one
+    import call, so it never runs its parallel import path), and that time now
+    overlaps the transfer instead of being added to it. Files are still deleted only
+    once lazer's log has confirmed their batch.
+    """
     path = Path(folder)
     files = sorted(path.glob("*.osz"))
     meta = library.load_meta(path)
@@ -286,7 +338,7 @@ def start_finalize(folder: str, *, skip_import: bool = False) -> dict:
         "import",
         name=path.name,
         folder=str(path),
-        total=len(files),
+        total=int(meta.get("set_count") or len(files)),
         done=0,
         imported=0,
         deleted=0,
@@ -299,94 +351,93 @@ def start_finalize(folder: str, *, skip_import: bool = False) -> dict:
     def run() -> None:
         imported = deleted = freed = 0
         failed_imports = 0
+        handled: set[str] = set()
         notes: list[str] = []
         try:
             chunk = max(1, int(SETTINGS.get("import_chunk", 250)))
             delete_after = bool(SETTINGS.get("delete_maps_after_import", True))
             confirm_timeout = float(SETTINGS.get("import_confirm_timeout", 1800))
+            transport = str(SETTINGS.get("import_transport", "auto"))
+            batch_size = int(SETTINGS.get("push_batch_size", 20))
+            parallel = int(SETTINGS.get("push_parallel", 8))
+            expected = int(meta.get("set_count") or len(files))
+            exe: Path | None = None
+            transport_logged = False
+            skipped_import = bool(skip_import)
 
-            if files and not skip_import:
-                exe = lazer.find_lazer_exe(SETTINGS.get("lazer_exe") or None)
-                if not exe:
-                    raise RuntimeError("osu!lazer executable not found")
-                if not lazer.is_running():
-                    if not SETTINGS.get("auto_start_lazer", True):
-                        raise RuntimeError(
-                            "osu!lazer is not running — start the game, then press finish in lazer again"
-                        )
-                    JOBS.update(jid, stage="starting osu!lazer")
-                    JOBS.log(jid, "osu!lazer is not running — starting it (it takes over the screen)")
-                    launch_ts = time.time()
-                    lazer.start_lazer(exe)
-                    # the game writes its own <id>.database.log per run — wait for the
-                    # new one, or every confirmation lands in a file nobody is reading
-                    importlog.wait_for_log_after(launch_ts, timeout=120.0)
-                if not lazer.is_running():
-                    raise RuntimeError("osu!lazer is not running and could not be started")
+            while True:
+                if cancel.is_set():
+                    raise RuntimeError("cancelled")
 
-                # lazer deletes every archive it imports, so:
-                #   deleting afterwards → hand it the originals (it frees the space itself)
-                #   keeping the library → hand it hardlinks and sweep those instead
-                push_paths = files
-                if not delete_after:
-                    staged, method = lazer.stage_for_import(files, path / ".import-staging")
-                    push_paths = list(staged)
-                    JOBS.log(jid, f"handing lazer {method} copies — the .osz library is kept")
+                pending = [f for f in sorted(path.glob("*.osz")) if f.name not in handled]
 
-                batch_size = int(SETTINGS.get("push_batch_size", 20))
-                parallel = int(SETTINGS.get("push_parallel", 8))
-                sizes = {str(p): (p.stat().st_size if p.exists() else 0) for p in push_paths}
-                chunks = [push_paths[i : i + chunk] for i in range(0, len(push_paths), chunk)]
-                JOBS.log(
-                    jid,
-                    f"importing {len(files)} maps: {len(chunks)} round(s) of {chunk}, "
-                    f"{batch_size} per launch, {parallel} launches at once",
-                )
+                if pending and not skipped_import:
+                    if exe is None:
+                        exe = _ensure_lazer_running(jid)
 
-                for index, chunk_files in enumerate(chunks, 1):
-                    if cancel.is_set():
-                        raise RuntimeError("cancelled")
+                    window, rest = pending[:chunk], pending[chunk:]
+                    push_paths = window
+                    if not delete_after:
+                        staged, method = lazer.stage_for_import(window, path / ".import-staging")
+                        push_paths = list(staged)
+                        if not transport_logged:
+                            JOBS.log(jid, f"handing lazer {method} copies — the .osz library is kept")
+
+                    sizes = {str(p): (p.stat().st_size if p.exists() else 0) for p in push_paths}
                     marker = importlog.position()
+                    JOBS.update(jid, stage=f"handing {len(window)} maps to lazer")
 
-                    def on_batch(number: int, pushed: list[str], failed: list[str], index: int = index) -> None:
-                        JOBS.update(
-                            jid,
-                            stage=f"round {index}/{len(chunks)}: handed {len(pushed)} maps to lazer",
-                        )
-
-                    push_result = lazer.push_files(
-                        chunk_files,
+                    push_result = lazer.hand_to_lazer(
+                        push_paths,
                         exe,
                         batch_size=batch_size,
                         parallel=parallel,
-                        on_batch=on_batch,
                         cancel=cancel,
+                        transport=transport,
                     )
                     handed = len(push_result["pushed"])
+                    used = push_result.get("transport")
+                    seconds = float(push_result.get("seconds") or 0.0)
+
+                    if not transport_logged:
+                        transport_logged = True
+                        if used == "pipe":
+                            JOBS.log(jid, "handing maps to the game's IPC pipe directly (no launcher processes)")
+                        elif push_result.get("reason"):
+                            JOBS.log(
+                                jid,
+                                f"IPC pipe unavailable ({push_result['reason']}) — using osu!.exe forwarders",
+                            )
+                    JOBS.log(
+                        jid,
+                        f"handed {handed} maps to lazer in {seconds:.2f}s"
+                        + (f" ({handed / seconds:.0f} maps/s, {used})" if seconds else f" ({used})"),
+                    )
                     for err in push_result["errors"][:3]:
                         notes.append(str(err))
                         JOBS.log(jid, str(err))
 
-                    JOBS.update(jid, stage=f"round {index}/{len(chunks)}: waiting for lazer to import")
+                    JOBS.update(jid, stage=f"lazer importing {len(window)} maps")
 
-                    def on_tick(state: dict, index: int = index) -> None:
+                    def on_tick(state: dict, size: int = len(window), done_before: int = imported) -> None:
                         JOBS.update(
                             jid,
-                            imported=imported + state.get("ok", 0),
-                            stage=f"round {index}/{len(chunks)}: {state.get('ok', 0)} imports confirmed",
+                            imported=done_before + state.get("ok", 0),
+                            stage=f"{state.get('ok', 0)}/{size} confirmed by lazer",
                         )
 
-                    expect = handed or len(chunk_files)
-                    state = importlog.wait_for_imports(expect, marker, timeout=confirm_timeout, on_tick=on_tick)
+                    state = importlog.wait_for_imports(
+                        handed or len(window), marker, timeout=confirm_timeout, on_tick=on_tick
+                    )
                     confirmed = state.get("ok", 0)
                     failed = state.get("failed", 0)
                     imported += confirmed
                     failed_imports += failed
-                    accounted = confirmed + failed >= len(chunk_files)
+                    accounted = confirmed + failed >= len(window)
 
                     if delete_after and accounted:
                         freed_here = 0
-                        for f in chunk_files:
+                        for f in window:
                             size = sizes.get(str(f), 0)
                             if f.exists():
                                 try:
@@ -399,24 +450,42 @@ def start_finalize(folder: str, *, skip_import: bool = False) -> dict:
                         freed += freed_here
                         JOBS.log(
                             jid,
-                            f"round {index}: {confirmed} imported — deleted {len(chunk_files)} archives "
-                            f"({freed_here / 1e6:.0f} MB freed)",
+                            f"{confirmed} imported — deleted {len(window)} archives ({_fmt_bytes(freed_here)} freed)",
                         )
                     elif delete_after:
                         notes.append(
-                            f"round {index}: lazer only confirmed {confirmed + failed}/{len(chunk_files)} — "
-                            "kept those files so nothing is lost"
+                            f"lazer confirmed only {confirmed + failed}/{len(window)} — kept those files so nothing is lost"
                         )
                         JOBS.log(jid, notes[-1])
-                    JOBS.update(jid, done=min(len(files), index * chunk), deleted=deleted, freed=freed)
 
-                if delete_after:
-                    staged = batch.cleanup(path)
-                    if staged.get("freed"):
-                        freed += staged["freed"]
-                        JOBS.log(jid, f"freed {staged['freed'] / 1e6:.0f} MB of staged copies")
-                else:
-                    lazer.sweep_stale_staging(path)
+                    handled.update(f.name for f in window)
+                    JOBS.update(
+                        jid,
+                        done=len(handled),
+                        deleted=deleted,
+                        freed=freed,
+                        total=max(expected, len(handled) + len(rest)),
+                    )
+                    continue
+
+                if wait_for is not None and wait_for():
+                    JOBS.update(
+                        jid,
+                        stage=f"waiting for the download — {len(handled)} maps handed over so far",
+                        total=max(expected, len(handled)),
+                    )
+                    time.sleep(3)
+                    continue
+
+                break
+
+            if delete_after:
+                staged = batch.cleanup(path)
+                if staged.get("freed"):
+                    freed += staged["freed"]
+                    JOBS.log(jid, f"freed {_fmt_bytes(staged['freed'])} of staged copies")
+            else:
+                lazer.sweep_stale_staging(path)
 
             collection_result = None
             collection_mode = SETTINGS.get("collection_mode", "database")

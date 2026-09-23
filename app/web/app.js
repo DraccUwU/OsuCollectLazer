@@ -380,6 +380,13 @@ function settingsModal() {
        </select></label>
      <div class="check"><input id="s-delete" type="checkbox" ${s.delete_maps_after_import ? 'checked' : ''}><label for="s-delete">delete the .osz files once lazer confirms the import (frees the space as it goes)</label></div>
      <label class="field"><span>import batch size (paths per game launch)</span><input id="s-chunk" type="text" value="${esc(s.import_chunk ?? 250)}"></label>
+     <label class="field"><span>maps → game via</span>
+       <select id="s-transport">
+         <option value="auto" ${(s.import_transport || 'auto') === 'auto' ? 'selected' : ''}>IPC pipe (fast), fall back to osu!.exe</option>
+         <option value="pipe" ${s.import_transport === 'pipe' ? 'selected' : ''}>only the IPC pipe</option>
+         <option value="launcher" ${s.import_transport === 'launcher' ? 'selected' : ''}>only osu!.exe forwarders (old way)</option>
+       </select></label>
+     <div class="check"><input id="s-stream" type="checkbox" ${s.stream_import ? 'checked' : ''}><label for="s-stream">hand maps to the game while they download (lazer imports ~1 map/s, so this runs it during the transfer)</label></div>
      <label class="field"><span>launches at once / paths per launch</span><input id="s-pushpar" type="text" value="${esc(s.push_parallel ?? 8)}" style="width:60px"> <input id="s-pushbatch" type="text" value="${esc(s.push_batch_size ?? 20)}" style="width:60px"></label>
      <div class="check"><input id="s-autostart" type="checkbox" ${s.auto_start_lazer ? 'checked' : ''}><label for="s-autostart">start osu!lazer automatically when it isn't running (it takes over the screen)</label></div>
      <label class="field"><span>lazer executable (empty = auto-detect)</span><input id="s-exe" type="text" value="${esc(s.lazer_exe || '')}"></label>
@@ -409,6 +416,8 @@ function settingsModal() {
       collection_mode: $('#s-collmode').value,
       delete_maps_after_import: $('#s-delete').checked,
       import_chunk: Math.max(1, parseInt($('#s-chunk').value, 10) || 250),
+      import_transport: $('#s-transport').value,
+      stream_import: $('#s-stream').checked,
       push_parallel: Math.max(1, parseInt($('#s-pushpar').value, 10) || 8),
       push_batch_size: Math.max(1, parseInt($('#s-pushbatch').value, 10) || 20),
       auto_start_lazer: $('#s-autostart').checked,

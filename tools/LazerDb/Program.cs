@@ -38,6 +38,7 @@ internal static class Program
         string? dataDir = null;
         string? collectionPath = null;
         string? versionsFor = null;
+        string? ipcTypeFor = null;
         bool dryRun = false;
 
         for (int i = 0; i < args.Length; i++)
@@ -53,6 +54,9 @@ internal static class Program
                 case "--versions-for":
                     versionsFor = Next(args, ref i);
                     break;
+                case "--ipc-type":
+                    ipcTypeFor = Next(args, ref i);
+                    break;
                 case "--dry-run":
                     dryRun = true;
                     break;
@@ -65,6 +69,17 @@ internal static class Program
         try
         {
             string? ownVersion = SchemaVersionOf(typeof(RealmAccess).Assembly);
+
+            if (ipcTypeFor != null)
+            {
+                string? typeName = IpcTypeOfFile(ipcTypeFor);
+                Console.WriteLine(JsonSerializer.Serialize(new
+                {
+                    ipc_type = typeName,
+                    osu_game_dll = ipcTypeFor,
+                }, json_options));
+                return typeName == null ? 1 : 0;
+            }
 
             if (versionsFor != null)
             {
@@ -185,27 +200,58 @@ internal static class Program
     {
         try
         {
-            string dir = Path.GetDirectoryName(Path.GetFullPath(osuGameDll))!;
-            // Framework assemblies come from the runtime; anything else (osu.Game,
-            // osu.Framework, Realm, ...) from the install folder. Keyed by file name so
-            // two different copies of the same assembly identity can't both be added
-            // (MetadataLoadContext refuses duplicate identities).
-            var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            foreach (string file in Directory.GetFiles(RuntimeEnvironment.GetRuntimeDirectory(), "*.dll"))
-                byName.TryAdd(Path.GetFileName(file), file);
-            foreach (string file in Directory.GetFiles(dir, "*.dll"))
-                byName.TryAdd(Path.GetFileName(file), file);
-
-            using var context = new MetadataLoadContext(new PathAssemblyResolver(byName.Values));
-            var assembly = context.LoadFromAssemblyPath(Path.GetFullPath(osuGameDll));
-            return assembly.GetType("osu.Game.Database.RealmAccess")
-                           ?.GetField("schema_version", const_flags)
-                           ?.GetRawConstantValue()?.ToString();
+            var (context, assembly) = LoadInstalled(osuGameDll);
+            using (context)
+            {
+                return assembly.GetType("osu.Game.Database.RealmAccess")
+                               ?.GetField("schema_version", const_flags)
+                               ?.GetRawConstantValue()?.ToString();
+            }
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"could not read schema version from {osuGameDll}: {ex.Message}");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Assembly-qualified name of the IPC message an external client must send to make
+    /// the running game import a file (osu.Framework's IpcChannel compares this string
+    /// exactly, version included, so it has to come from the installed build).
+    /// </summary>
+    private static string? IpcTypeOfFile(string osuGameDll)
+    {
+        try
+        {
+            var (context, assembly) = LoadInstalled(osuGameDll);
+            using (context)
+            {
+                return assembly.GetType("osu.Game.IPC.ArchiveImportMessage")?.AssemblyQualifiedName;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"could not read the IPC message type from {osuGameDll}: {ex.Message}");
+            return null;
+        }
+    }
+
+    private static (MetadataLoadContext context, Assembly assembly) LoadInstalled(string osuGameDll)
+    {
+        string dir = Path.GetDirectoryName(Path.GetFullPath(osuGameDll))!;
+        // Framework assemblies come from the runtime; anything else (osu.Game,
+        // osu.Framework, Realm, ...) from the install folder. Keyed by file name so
+        // two different copies of the same assembly identity can't both be added
+        // (MetadataLoadContext refuses duplicate identities).
+        var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (string file in Directory.GetFiles(RuntimeEnvironment.GetRuntimeDirectory(), "*.dll"))
+            byName.TryAdd(Path.GetFileName(file), file);
+        foreach (string file in Directory.GetFiles(dir, "*.dll"))
+            byName.TryAdd(Path.GetFileName(file), file);
+
+        var context = new MetadataLoadContext(new PathAssemblyResolver(byName.Values));
+        var assembly = context.LoadFromAssemblyPath(Path.GetFullPath(osuGameDll));
+        return (context, assembly);
     }
 }

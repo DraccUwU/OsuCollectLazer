@@ -70,6 +70,54 @@ def version_status() -> dict:
         return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
 
 
+_IPC_TYPE_CACHE: dict = {"value": None, "reason": None}
+
+IPC_MESSAGE_TYPE = "osu.Game.IPC.ArchiveImportMessage"
+
+
+def ipc_message_type() -> str:
+    """The exact IPC `Type` string the installed lazer compares against.
+
+    osu.Framework's IpcChannel compares the assembly-qualified name byte for byte, and
+    the assembly version is part of it, so it is read out of the installed osu.Game.dll
+    via the helper. Without the helper (or if it can't read the dll) the name is
+    composed from the installed release version, which has always matched so far.
+    """
+    cached = _IPC_TYPE_CACHE.get("value")
+    if cached:
+        return cached
+
+    dll = installed_osu_game_dll()
+    helper = helper_path()
+    if helper and dll:
+        try:
+            proc = subprocess.run(
+                [str(helper), "--ipc-type", str(dll)],
+                capture_output=True,
+                text=True,
+                timeout=180,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            payload = json.loads(proc.stdout.strip() or "{}")
+            name = payload.get("ipc_type")
+            if name:
+                _IPC_TYPE_CACHE["value"] = name
+                return name
+        except Exception as exc:
+            _IPC_TYPE_CACHE["reason"] = f"{type(exc).__name__}: {exc}"
+
+    version = lazer.info().get("version") if hasattr(lazer, "info") else None
+    if version:
+        parts = str(version).split(".")
+        while len(parts) < 4:
+            parts.append("0")
+        name = f"{IPC_MESSAGE_TYPE}, osu.Game, Version={'.'.join(parts[:4])}, Culture=neutral, PublicKeyToken=null"
+        _IPC_TYPE_CACHE["value"] = name
+        return name
+
+    raise RuntimeError("could not determine the IPC message type (no helper and no lazer version)")
+
+
 def backup_realm(data_dir: Path | None = None) -> Path | None:
     data_dir = data_dir or lazer.data_dir()
     if not data_dir:
