@@ -18,7 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import batch, collectiondb, collector, config, importlog, lazer, lazerdb, library
+from . import collectiondb, collector, config, lazer, lazerdb, library
 from .downloader import DownloadJob, Downloader
 from .mirrors import MIRRORS, MirrorPool
 
@@ -199,14 +199,14 @@ def start_download(ref: str) -> dict:
                 JOBS.log(jid, f"mirror probe → fastest first: {order}")
             except Exception as exc:
                 JOBS.log(jid, f"mirror probe skipped: {exc}")
-            # One-click pipeline: with streaming on, the maps are handed to the game as
-            # they land, so lazer's serial import (~1 map/s) runs *during* the download.
+            # One-click pipeline: with streaming on, each wave of maps is imported (and
+            # deleted) while the download is still running instead of after it.
             pipeline_mode = SETTINGS.get("pipeline_mode", "auto")
             streaming = pipeline_mode == "auto" and bool(SETTINGS.get("stream_import", True))
             if streaming:
                 try:
                     start_finalize(str(folder), wait_for=lambda: _download_active(jid))
-                    JOBS.log(jid, "streaming import started — maps go to osu!lazer as they land")
+                    JOBS.log(jid, "streaming import started — maps are imported as they land")
                 except Exception as exc:
                     JOBS.log(jid, f"streaming import skipped: {exc}")
 
@@ -238,14 +238,8 @@ def start_download(ref: str) -> dict:
                         start_finalize(str(folder))
                     except Exception as exc:
                         JOBS.log(jid, f"finalize skipped: {exc}")
-            elif mode == "wizard":
-                JOBS.log(jid, "map import mode: stage for lazer's import screen")
-                try:
-                    start_prepare(str(folder))
-                except Exception as exc:
-                    JOBS.log(jid, f"staging skipped: {exc}")
             else:
-                JOBS.log(jid, "pipeline mode: manual — use the Library buttons")
+                JOBS.log(jid, "pipeline mode: manual — press 'import now' in the Library when you want the maps in")
         except Exception as exc:
             JOBS.update(jid, status="failed", message=f"{type(exc).__name__}: {exc}")
             JOBS.log(jid, f"failed: {exc}")
@@ -269,7 +263,7 @@ def _collections_payload() -> dict:
 
 
 def lazerdb_status(max_age: float = 300.0) -> dict:
-    """Cached "can collections go straight into lazer?" answer (it spawns a helper process)."""
+    """Cached "is the import helper usable?" answer (it spawns a helper process)."""
     payload = _LAZERDB_STATUS_CACHE.get("payload")
     if payload is None or (time.time() - float(_LAZERDB_STATUS_CACHE.get("at") or 0)) > max_age:
         try:
@@ -299,36 +293,37 @@ def _import_active(folder: Path) -> bool:
     return any(job["kind"] == "import" for job in JOBS.active_jobs(str(folder)))
 
 
-def _ensure_lazer_running(jid: str, exe: Path | None = None) -> Path:
-    """Make sure a lazer instance is up (starting it when allowed) with a watched log."""
-    exe = exe or lazer.find_lazer_exe(SETTINGS.get("lazer_exe") or None)
-    if not exe:
-        raise RuntimeError("osu!lazer executable not found")
+def _ensure_lazer_closed(jid: str) -> None:
+    """Direct imports need the game closed; close it gracefully unless that is turned off."""
     if not lazer.is_running():
-        if not SETTINGS.get("auto_start_lazer", True):
-            raise RuntimeError("osu!lazer is not running — start the game, then press finish in lazer again")
-        JOBS.update(jid, stage="starting osu!lazer")
-        JOBS.log(jid, "osu!lazer is not running — starting it (it takes over the screen)")
-        launch_ts = time.time()
-        lazer.start_lazer(exe)
-        # the game writes its own <id>.database.log per run — wait for the new one, or
-        # every confirmation lands in a file nobody is reading
-        importlog.wait_for_log_after(launch_ts, timeout=120.0)
-    if not lazer.is_running():
-        raise RuntimeError("osu!lazer is not running and could not be started")
-    return exe
+        return
+    if not SETTINGS.get("close_lazer_before_import", True):
+        raise RuntimeError(
+            "osu!lazer is running and closing it automatically is turned off — close the game "
+            "(or re-enable that setting) and import again"
+        )
+    JOBS.update(jid, stage="closing osu!lazer")
+    JOBS.log(jid, "osu!lazer is running — closing it, since imports write straight into its files")
+    ok, how = lazer.close_lazer()
+    if not ok:
+        raise RuntimeError(f"could not close osu!lazer: {how}")
+    if how == "force-closed":
+        JOBS.log(
+            jid,
+            "osu!lazer ignored a normal close request (it was busy), so it was terminated — "
+            "anything unsaved in the game is gone",
+        )
+    else:
+        JOBS.log(jid, "osu!lazer closed")
 
 
 def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> dict:
-    """The one-click pipeline: maps into a running lazer, confirm, delete them, then
-    write the collection into lazer's database. No in-game steps at any point.
+    """The one-click pipeline: import the maps into lazer's files + database with the
+    helper (lazer's own importer, in parallel), delete the archives as they are taken,
+    then write the collection entry. osu!lazer never has to be open.
 
-    `wait_for` (optional callable) keeps the job alive while it returns True, so the
-    maps are handed over *as they arrive* instead of after the download finishes:
-    lazer's own import is serial (about a map per second — one IPC message is one
-    import call, so it never runs its parallel import path), and that time now
-    overlaps the transfer instead of being added to it. Files are still deleted only
-    once lazer's log has confirmed their batch.
+    `wait_for` (optional callable) keeps the job alive while it returns True, so each wave
+    is imported *while the download is still running* instead of after it.
     """
     path = Path(folder)
     files = sorted(path.glob("*.osz"))
@@ -355,15 +350,9 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
         notes: list[str] = []
         try:
             chunk = max(1, int(SETTINGS.get("import_chunk", 250)))
-            delete_after = bool(SETTINGS.get("delete_maps_after_import", True))
-            confirm_timeout = float(SETTINGS.get("import_confirm_timeout", 1800))
-            transport = str(SETTINGS.get("import_transport", "auto"))
-            batch_size = int(SETTINGS.get("push_batch_size", 20))
-            parallel = int(SETTINGS.get("push_parallel", 8))
             expected = int(meta.get("set_count") or len(files))
-            exe: Path | None = None
-            transport_logged = False
             skipped_import = bool(skip_import)
+            announced = False
 
             while True:
                 if cancel.is_set():
@@ -372,157 +361,73 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
                 pending = [f for f in sorted(path.glob("*.osz")) if f.name not in handled]
 
                 if pending and not skipped_import:
-                    effective = transport
-                    if effective == "direct":
-                        if not delete_after:
-                            JOBS.log(jid, "direct import would delete the archives — keeping the maps, so the IPC pipe it is")
-                            effective = "auto"
-                        elif lazer.is_running():
-                            JOBS.log(jid, "direct import needs osu!lazer closed — using the IPC pipe for this batch")
-                            effective = "auto"
-                    if effective != "direct" and exe is None:
-                        exe = _ensure_lazer_running(jid)
-
                     window, rest = pending[:chunk], pending[chunk:]
-                    push_paths = window
-                    if not delete_after:
-                        staged, method = lazer.stage_for_import(window, path / ".import-staging")
-                        push_paths = list(staged)
-                        if not transport_logged:
-                            JOBS.log(jid, f"handing lazer {method} copies — the .osz library is kept")
-
-                    sizes = {str(p): (p.stat().st_size if p.exists() else 0) for p in push_paths}
-                    confirmed = failed = 0
-                    used = None
-                    seconds = 0.0
-                    failed_names: set[str] = set()
-
-                    if effective == "direct":
-                        try:
-                            direct = lazerdb.import_beatmaps(window)
-                            confirmed = int(direct["imported"])
-                            failed = int(direct["failed"])
-                            seconds = float(direct["seconds"] or 0.0)
-                            if not transport_logged:
-                                transport_logged = True
-                                JOBS.log(
-                                    jid,
-                                    "importing straight into lazer's store + database with the helper "
-                                    "(parallel, no game needed)",
-                                )
-                            rate = confirmed / seconds if seconds else 0.0
-                            sets = ""
-                            if direct.get("sets_before") is not None and direct.get("sets_after") is not None:
-                                sets = f" [lazer beatmapsets {direct['sets_before']} → {direct['sets_after']}]"
-                            JOBS.log(
-                                jid,
-                                f"direct import: {confirmed} imported, {failed} failed in {seconds:.1f}s"
-                                + (f" ({rate:.1f} maps/s)" if seconds else "")
-                                + sets,
-                            )
-                            for err in direct["errors"][:3]:
-                                notes.append(str(err))
-                                JOBS.log(jid, str(err))
-                            failed_names = set(direct.get("failed_files") or [])
-                            JOBS.update(
-                                jid,
-                                imported=imported + confirmed,
-                                stage=f"{confirmed}/{len(window)} imported directly",
-                            )
-                        except Exception as exc:
-                            notes.append(f"direct import failed: {exc}")
-                            JOBS.log(jid, f"direct import failed ({exc}) — falling back to the IPC pipe")
-                            effective = "auto"
-                            if exe is None:
-                                exe = _ensure_lazer_running(jid)
-
-                    if effective != "direct":
-                        marker = importlog.position()
-                        JOBS.update(jid, stage=f"handing {len(window)} maps to lazer")
-
-                        push_result = lazer.hand_to_lazer(
-                            push_paths,
-                            exe,
-                            batch_size=batch_size,
-                            parallel=parallel,
-                            cancel=cancel,
-                            transport=transport,
-                        )
-                        handed = len(push_result["pushed"])
-                        used = push_result.get("transport")
-                        seconds = float(push_result.get("seconds") or 0.0)
-
-                        if not transport_logged:
-                            transport_logged = True
-                            if used == "pipe":
-                                JOBS.log(jid, "handing maps to the game's IPC pipe directly (no launcher processes)")
-                            elif push_result.get("reason"):
-                                JOBS.log(
-                                    jid,
-                                    f"IPC pipe unavailable ({push_result['reason']}) — using osu!.exe forwarders",
-                                )
+                    if not announced:
+                        announced = True
                         JOBS.log(
                             jid,
-                            f"handed {handed} maps to lazer in {seconds:.2f}s"
-                            + (f" ({handed / seconds:.0f} maps/s, {used})" if seconds else f" ({used})"),
+                            "importing with lazer's own importer, in parallel, straight into its "
+                            "files + database — the game does not need to be running",
                         )
-                        for err in push_result["errors"][:3]:
-                            notes.append(str(err))
-                            JOBS.log(jid, str(err))
 
-                        JOBS.update(jid, stage=f"lazer importing {len(window)} maps")
+                    _ensure_lazer_closed(jid)
 
-                        def on_tick(state: dict, size: int = len(window), done_before: int = imported) -> None:
-                            JOBS.update(
-                                jid,
-                                imported=done_before + state.get("ok", 0),
-                                stage=f"{state.get('ok', 0)}/{size} confirmed by lazer",
-                            )
+                    sizes = {str(p): (p.stat().st_size if p.exists() else 0) for p in window}
+                    JOBS.update(jid, stage=f"importing {len(window)} maps")
 
-                        state = importlog.wait_for_imports(
-                            handed or len(window), marker, timeout=confirm_timeout, on_tick=on_tick
-                        )
-                        confirmed = state.get("ok", 0)
-                        failed = state.get("failed", 0)
+                    report = lazerdb.import_beatmaps(window)
+                    confirmed = int(report["imported"])
+                    failed = int(report["failed"])
+                    seconds = float(report["seconds"] or 0.0)
+                    failed_names = set(report.get("failed_files") or [])
+
+                    rate = confirmed / seconds if seconds else 0.0
+                    sets = ""
+                    if report.get("sets_before") is not None and report.get("sets_after") is not None:
+                        sets = f" [lazer beatmapsets {report['sets_before']} → {report['sets_after']}]"
+                    JOBS.log(
+                        jid,
+                        f"{confirmed} imported, {failed} failed in {seconds:.1f}s"
+                        + (f" ({rate:.1f} maps/s)" if seconds else "")
+                        + sets,
+                    )
+                    for err in report["errors"][:3]:
+                        notes.append(str(err))
+                        JOBS.log(jid, str(err))
 
                     imported += confirmed
                     failed_imports += failed
-                    accounted = confirmed + failed >= len(window)
 
-                    if delete_after and accounted:
-                        freed_here = 0
-                        kept = 0
-                        for f in window:
-                            if f.name in failed_names or str(f) in failed_names:
-                                # the helper said this one did not import — never delete it
-                                notes.append(f"kept {f.name} (import failed, retry later)")
-                                kept += 1
+                    # the importer deletes the archives it takes (lazer's
+                    # ShouldDeleteArchive); this accounts for the space and removes the rest
+                    freed_here = 0
+                    kept = 0
+                    for f in window:
+                        if f.name in failed_names or str(f) in failed_names:
+                            notes.append(f"kept {f.name} (import failed — the file stays for a retry)")
+                            kept += 1
+                            continue
+                        size = sizes.get(str(f), 0)
+                        if f.exists():
+                            try:
+                                f.unlink()
+                            except OSError as exc:
+                                notes.append(f"could not delete {f.name}: {exc}")
                                 continue
-                            size = sizes.get(str(f), 0)
-                            if f.exists():
-                                try:
-                                    f.unlink()
-                                except OSError as exc:
-                                    notes.append(f"could not delete {f.name}: {exc}")
-                                    continue
-                            deleted += 1
-                            freed_here += size
-                        freed += freed_here
-                        JOBS.log(
-                            jid,
-                            f"{confirmed} imported — deleted {len(window) - kept} archives "
-                            f"({_fmt_bytes(freed_here)} freed)"
-                            + (f", kept {kept} that failed" if kept else ""),
-                        )
-                    elif delete_after:
-                        notes.append(
-                            f"lazer confirmed only {confirmed + failed}/{len(window)} — kept those files so nothing is lost"
-                        )
-                        JOBS.log(jid, notes[-1])
+                        deleted += 1
+                        freed_here += size
+                    freed += freed_here
+                    JOBS.log(
+                        jid,
+                        f"{confirmed} imported — {len(window) - kept} archives gone "
+                        f"({_fmt_bytes(freed_here)} freed)"
+                        + (f", {kept} kept after failures" if kept else ""),
+                    )
 
                     handled.update(f.name for f in window)
                     JOBS.update(
                         jid,
+                        imported=imported,
                         done=len(handled),
                         deleted=deleted,
                         freed=freed,
@@ -533,21 +438,13 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
                 if wait_for is not None and wait_for():
                     JOBS.update(
                         jid,
-                        stage=f"waiting for the download — {len(handled)} maps handed over so far",
+                        stage=f"waiting for the download — {len(handled)} maps imported so far",
                         total=max(expected, len(handled)),
                     )
                     time.sleep(3)
                     continue
 
                 break
-
-            if delete_after:
-                staged = batch.cleanup(path)
-                if staged.get("freed"):
-                    freed += staged["freed"]
-                    JOBS.log(jid, f"freed {_fmt_bytes(staged['freed'])} of staged copies")
-            else:
-                lazer.sweep_stale_staging(path)
 
             collection_result = None
             collection_mode = SETTINGS.get("collection_mode", "database")
@@ -563,8 +460,8 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
                 except Exception as exc:
                     notes.append(f"collection write failed: {exc}")
                     JOBS.log(jid, notes[-1])
-            elif db_path.exists() and collection_mode == "wizard":
-                notes.append("collection left for lazer's import screen (collection_mode=wizard)")
+            elif db_path.exists():
+                notes.append("collection left in the folder for lazer's import screen (collection_mode=off)")
 
             library.record_import(
                 path,
@@ -598,146 +495,6 @@ def start_finalize(folder: str, *, skip_import: bool = False, wait_for=None) -> 
     return JOBS.get(jid) or {}
 
 
-def start_prepare(folder: str, retry_failed: bool = False) -> dict:
-    """Unpack a collection's .osz files so lazer's import screen can take them all
-    in ONE task, alongside the collection entry."""
-    path = Path(folder)
-    files = sorted(path.glob("*.osz"))
-    if not files:
-        raise ValueError("no .osz files in that folder")
-    meta = library.load_meta(path)
-    name = meta.get("collection_name") or meta.get("name") or path.name
-    hashes: list[str] = []
-    if (path / "collection.db").exists():
-        entries = collectiondb.read_collection_db(path / "collection.db")
-        hashes = entries[0]["hashes"] if entries else []
-    jid = JOBS.new("prepare", name=path.name, folder=str(path), total=len(files), done=0)
-    cancel = threading.Event()
-    CANCELS[jid] = cancel
-
-    def run() -> None:
-        try:
-
-            def progress(done: int, total: int, written: int, error: str) -> None:
-                if cancel.is_set():
-                    raise RuntimeError("cancelled")
-                JOBS.update(
-                    jid,
-                    done=done,
-                    total=total,
-                    bytes=written,
-                    message=f"{done}/{total} maps unpacked",
-                )
-
-            result = batch.prepare(
-                path,
-                name,
-                hashes,
-                worker=int(SETTINGS.get("extract_workers", 4)),
-                progress=progress,
-            )
-            state = batch.state(path)
-            JOBS.update(
-                jid,
-                status="done" if not result["errors"] else "partial",
-                prepared=state,
-                errors={n: e for n, e in (e.split(": ", 1) for e in result["errors"])} if result["errors"] else {},
-                message=f"{result['maps']} maps staged for the import screen — one task in lazer",
-            )
-            JOBS.log(jid, f"staged under {result['root']} ({result['bytes'] / 1e6:.0f} MB unpacked)")
-            if result["errors"]:
-                JOBS.log(jid, f"{len(result['errors'])} archive(s) failed to unpack")
-        except Exception as exc:
-            JOBS.update(jid, status="failed", message=f"{type(exc).__name__}: {exc}")
-            JOBS.log(jid, f"failed: {exc}")
-        finally:
-            CANCELS.pop(jid, None)
-
-    threading.Thread(target=run, daemon=True, name=f"prepare-{jid}").start()
-    return JOBS.get(jid) or {}
-
-
-def start_push(folder: str, force: bool = False) -> dict:
-    path = Path(folder)
-    state = library.load_import_state(path)
-    already = {name for name, value in (state.get("pushed") or {}).items() if value == "ok"}
-    files = sorted(path.glob("*.osz"))
-    if not force and already:
-        files = [f for f in files if f.name not in already]
-    if not files:
-        raise ValueError("nothing to push — every .osz in that folder has already been handed to lazer")
-    jid = JOBS.new("push", name=path.name, folder=str(path), total=len(files), done=0, pushed=0, failed=0)
-    cancel = threading.Event()
-    CANCELS[jid] = cancel
-
-    def run() -> None:
-        staging = path / ".import-staging"
-        try:
-            exe = lazer.find_lazer_exe(SETTINGS.get("lazer_exe") or None)
-            if not lazer.is_running():
-                if exe and SETTINGS.get("auto_start_lazer", True):
-                    JOBS.log(jid, "lazer not running — starting it")
-                    lazer.start_lazer(exe)
-                if not lazer.is_running():
-                    raise RuntimeError("osu!lazer is not running — start the game, then push again")
-
-            # stage hardlinks so lazer's post-import deletion doesn't eat the library
-            try:
-                staged, mode = lazer.stage_for_import(files, staging)
-                JOBS.log(jid, f"staged {len(staged)} files by {mode} — library copies stay in the folder")
-            except Exception as exc:
-                staged, mode = files, "direct"
-                JOBS.log(jid, f"staging failed ({exc}); pushing in place (lazer will delete them after import)")
-            JOBS.log(jid, f"pushing {len(staged)} files to {exe}")
-
-            def on_batch(index: int, pushed: list[str], failed: list[str]) -> None:
-                JOBS.update(
-                    jid,
-                    done=len(pushed) + len(failed),
-                    pushed=len(pushed),
-                    failed=len(failed),
-                    message=f"batch {index}: {len(pushed)} queued, {len(failed)} not acknowledged",
-                )
-                JOBS.log(jid, f"batch {index}: {len(pushed)} ok, {len(failed)} unacknowledged")
-
-            result = lazer.push_files(
-                staged,
-                exe,
-                batch_size=int(SETTINGS.get("push_batch_size", 20)),
-                on_batch=on_batch,
-                cancel=cancel,
-            )
-            library.record_push(
-                path,
-                [Path(p).name for p in result["pushed"]],
-                [Path(p).name for p in result["failed"]],
-                result["errors"],
-            )
-            status = "done" if not result["failed"] else "partial"
-            JOBS.update(
-                jid,
-                status=status,
-                done=len(result["pushed"]) + len(result["failed"]),
-                pushed=len(result["pushed"]),
-                failed=len(result["failed"]),
-                message=f"{len(result['pushed'])} files handed to lazer",
-            )
-            JOBS.log(jid, JOBS.get(jid)["message"])
-        except Exception as exc:
-            JOBS.update(jid, status="failed", message=f"{type(exc).__name__}: {exc}")
-            JOBS.log(jid, f"failed: {exc}")
-        finally:
-            # lazer may still be reading the staged hardlinks; clean up in the background
-            threading.Thread(target=lazer.clear_staging_later, args=(staging,), daemon=True).start()
-            CANCELS.pop(jid, None)
-
-    threading.Thread(target=run, daemon=True, name=f"push-{jid}").start()
-    return JOBS.get(jid) or {}
-
-
-# ---------------------------------------------------------------------------
-# API
-# ---------------------------------------------------------------------------
 def _download_root() -> Path:
     return config.download_dir(SETTINGS).resolve()
 
@@ -769,10 +526,9 @@ def _path_size(path: Path) -> int:
 def delete_library(scope: str = "all", folder: str | None = None, dry_run: bool = False) -> dict:
     """Delete downloaded data.
 
-    scope "all"    -> collection folders (maps, staged copies, database, bookkeeping)
-    scope "staged" -> only the unpacked copies lazer's import screen uses
-    `folder` limits the operation to one collection; `dry_run` only reports sizes.
-    Never touches lazer's own data or the app's settings.
+    Deletes whole collection folders (maps, collection.db, bookkeeping); `folder` limits
+    the operation to one collection and `dry_run` only reports sizes. Never touches
+    lazer's own data or the app's settings.
     """
     root = _download_root()
     if folder:
@@ -800,17 +556,8 @@ def delete_library(scope: str = "all", folder: str | None = None, dry_run: bool 
     freed = 0
     removed = 0
     leftover: list[str] = []
-    staged_only = scope == "staged"
 
     for candidate in folders:
-        if staged_only:
-            # never delete in dry-run mode: report the size the cleanup would free
-            if dry_run:
-                freed += batch.state(candidate)["bytes"]
-                removed += 1
-            else:
-                freed += batch.cleanup(candidate)["freed"]
-            continue
         freed += _path_size(candidate)
         if dry_run:
             removed += 1
@@ -822,20 +569,19 @@ def delete_library(scope: str = "all", folder: str | None = None, dry_run: bool 
             removed += 1
 
     # stray files sitting directly in the download root
-    if not staged_only:
-        for f in root.iterdir():
-            if not f.is_file():
-                continue
-            size = _path_size(f)
-            if dry_run:
-                removed += 1
-                continue
-            try:
-                f.unlink()
-                freed += size
-                removed += 1
-            except OSError:
-                leftover.append(f.name)
+    for f in root.iterdir():
+        if not f.is_file():
+            continue
+        size = _path_size(f)
+        if dry_run:
+            removed += 1
+            continue
+        try:
+            f.unlink()
+            freed += size
+            removed += 1
+        except OSError:
+            leftover.append(f.name)
 
     return {
         "scope": scope,
@@ -884,7 +630,8 @@ def api_get(path: str, query: dict) -> tuple[int, dict]:
             "pipeline": {
                 "pipeline_mode": SETTINGS.get("pipeline_mode", "auto"),
                 "collection_mode": SETTINGS.get("collection_mode", "database"),
-                "delete_maps_after_import": bool(SETTINGS.get("delete_maps_after_import", True)),
+                "stream_import": bool(SETTINGS.get("stream_import", True)),
+                "close_lazer_before_import": bool(SETTINGS.get("close_lazer_before_import", True)),
                 "lazerdb": lazerdb_status(),
             },
         }
@@ -909,6 +656,8 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
         return 200, {"job": JOBS.list()[0], "started": True}
     if path == "/api/library/delete":
         scope = str(body.get("scope") or "all")
+        if scope not in ("all",):
+            return 400, {"error": f"unknown scope {scope!r}"}
         try:
             result = delete_library(
                 scope=scope,
@@ -920,23 +669,6 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
         except RuntimeError as exc:
             return 409, {"error": str(exc)}
         return 200, result
-    if path == "/api/batch/prepare":
-        folder = Path(str(body.get("folder") or ""))
-        if not _inside_download_dir(folder):
-            return 403, {"error": "folder is outside the download directory"}
-        busy = JOBS.active_jobs(str(folder))
-        if busy:
-            return 409, {"error": f"{busy[0]['kind']} already running for that collection"}
-        start_prepare(str(folder))
-        return 200, {"started": True}
-    if path == "/api/batch/cleanup":
-        folder = Path(str(body.get("folder") or ""))
-        if not _inside_download_dir(folder):
-            return 403, {"error": "folder is outside the download directory"}
-        busy = JOBS.active_jobs(str(folder))
-        if busy:
-            return 409, {"error": f"{busy[0]['kind']} is still running for that collection — wait for it first"}
-        return 200, batch.cleanup(folder)
     if path == "/api/mirrors/probe":
         pool = MirrorPool(SETTINGS.get("mirrors"))
         probe = pool.probe(no_video=bool(SETTINGS.get("no_video", True)))
@@ -948,12 +680,6 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
                 for n in pool.names
             ]
         }
-    if path == "/api/push":
-        folder = Path(str(body.get("folder") or ""))
-        if not _inside_download_dir(folder):
-            return 403, {"error": "folder is outside the download directory"}
-        start_push(str(folder), force=bool(body.get("force")))
-        return 200, {"started": True}
     if path == "/api/jobs/cancel":
         jid = str(body.get("id") or "")
         cancel = CANCELS.get(jid)
@@ -961,28 +687,6 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
             cancel.set()
             return 200, {"cancelled": True}
         return 404, {"error": "unknown or finished job"}
-    if path == "/api/prepare":
-        folder = Path(str(body.get("folder") or ""))
-        if not _inside_download_dir(folder):
-            return 403, {"error": "folder is outside the download directory"}
-        meta = library.load_meta(folder)
-        name = str(body.get("name") or meta.get("collection_name") or meta.get("name") or folder.name)
-        db = collectiondb.read_collection_db(folder / "collection.db") if (folder / "collection.db").exists() else []
-        hashes = db[0]["hashes"] if db else []
-        if not hashes:
-            return 400, {"error": "no collection.db to rebuild (download the collection first)"}
-        info = collectiondb.write_collection_folder(folder, name, hashes)
-        library.save_meta(folder, {**meta, "collection_name": name, "collection_db_collections": info["collections"]})
-        ok, reason = collectiondb.folder_is_importable(folder)
-        return 200, {"ok": True, "name": name, "hashes": len(hashes), "importable": ok, "reason": reason}
-    if path == "/api/mark-imported":
-        folder = Path(str(body.get("folder") or ""))
-        if not _inside_download_dir(folder):
-            return 403, {"error": "folder is outside the download directory"}
-        state = library.load_import_state(folder)
-        state["collection_imported"] = bool(body.get("value", True))
-        library.save_import_state(folder, state)
-        return 200, {"collection_imported": state["collection_imported"]}
     if path == "/api/settings":
         updates = body.get("settings") or {}
         for key in config.DEFAULTS:
@@ -1023,12 +727,6 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
         else:
             subprocess.Popen(["xdg-open", str(folder)])
         return 200, {"opened": str(folder)}
-    if path == "/api/lazer/start":
-        exe = lazer.find_lazer_exe(SETTINGS.get("lazer_exe") or None)
-        if not exe:
-            return 404, {"error": "osu!lazer executable not found"}
-        started = lazer.start_lazer(exe)
-        return 200, {"started": started, "running": lazer.is_running()}
     raise KeyError(path)
 
 
@@ -1128,10 +826,12 @@ def main(argv: list[str] | None = None) -> int:
         print("Another OsuCollectLazer is probably already running — just open the URL above.")
         return 1
     url = f"http://127.0.0.1:{port}/"
-    swept = lazer.sweep_stale_staging(_download_root())
+    status = lazerdb_status()
+    helper = "ready" if status.get("available") else f"NOT READY ({status.get('reason', 'unknown')})"
     print(f"OsuCollectLazer running at {url}")
-    print(f"  download dir : {_download_root()}" + (f"  (cleaned {swept} stale staging dir(s))" if swept else ""))
+    print(f"  download dir : {_download_root()}")
     print(f"  lazer        : {lazer.info(SETTINGS)}")
+    print(f"  map import   : direct + parallel via the helper — {helper}")
     print("Stop with Ctrl+C")
     if "--no-browser" not in argv:
         threading.Thread(target=lambda: (time.sleep(0.6), webbrowser.open(url)), daemon=True).start()

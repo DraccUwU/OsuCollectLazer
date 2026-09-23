@@ -159,11 +159,7 @@ function renderJobs(jobs) {
       const speed = j.speed ? ` · ${fmtBytes(j.speed)}/s` : '';
       const counts = j.kind === 'download'
         ? `${done}/${total} sets · ${j.ok || 0} ok · ${j.skipped || 0} cached · ${j.failed || 0} failed · ${fmtBytes(j.bytes)}${speed}`
-        : j.kind === 'prepare'
-          ? `${done}/${total} maps unpacked · ${fmtBytes(j.bytes)}`
-          : j.kind === 'import'
-            ? `${j.imported || 0} imported · ${j.deleted || 0} files deleted · ${fmtBytes(j.freed || 0)} freed${j.failed ? ` · ${j.failed} failed` : ''}`
-            : `${done}/${total} files · ${j.pushed || 0} pushed · ${j.failed || 0} failed`;
+        : `${j.imported || 0} imported · ${j.deleted || 0} files deleted · ${fmtBytes(j.freed || 0)} freed${j.failed ? ` · ${j.failed} failed` : ''}`;
       const errors = j.errors && Object.keys(j.errors).length
         ? `<div class="log">${Object.entries(j.errors).map(([k, v]) => `${esc(k)}: ${esc(v)}`).join('\n')}</div>`
         : '';
@@ -171,13 +167,9 @@ function renderJobs(jobs) {
       const actions = j.status === 'running' ? `<button class="small ghost" data-cancel="${j.id}">cancel</button>` : '';
       const footer = j.status !== 'running' && j.folder
         ? `<div class="row" style="margin:8px 0 0">
-             <button class="small" data-finalize="${esc(j.folder)}" title="import the maps, delete them once lazer confirms, and write the collection — no in-game steps">finish in lazer</button>
+             <button class="small" data-finalize="${esc(j.folder)}" title="import the maps into lazer in parallel, delete each archive as it lands, then write the collection">import now</button>
              <button class="small ghost" data-writecoll="${esc(j.folder)}" title="write the collection entry straight into lazer's database">write collection</button>
-             <button class="small ghost" data-steps="${esc(j.import_folder || j.folder)}">import steps</button>
-             ${j.kind === 'download' ? `
-               <button class="small ghost" data-push="${esc(j.folder)}" title="hand the .osz files to the running game now">push maps</button>
-               <button class="small ghost" data-batch="${esc(j.folder)}" title="unpack the maps so lazer's import screen takes them all in ONE task">stage</button>` : ''}
-             ${j.kind === 'prepare' || j.kind === 'import' ? `<button class="small ghost" data-cleanup="${esc(j.folder)}">free space</button>` : ''}
+             <button class="small ghost" data-open="${esc(j.folder)}">folder</button>
            </div>`
         : '';
       return `<div class="job">
@@ -185,7 +177,7 @@ function renderJobs(jobs) {
           <div><b>${esc(j.name || j.folder)}</b> <span class="muted">${j.kind} · <span style="color:${statusColour}">${esc(j.status)}</span> · ${j.elapsed ?? 0}s</span></div>
           <div>${actions}</div>
         </div>
-        <div class="bar ${j.kind === 'push' ? 'push' : ''}"><i style="width:${pct}%"></i></div>
+        <div class="bar"><i style="width:${pct}%"></i></div>
         <div class="muted">${esc(counts)}${j.message ? ` — ${esc(j.message)}` : ''}</div>
         ${j.log && j.log.length ? `<div class="log">${j.log.slice(-6).map(esc).join('\n')}</div>` : ''}
         ${errors}
@@ -211,16 +203,13 @@ function renderLibrary(cols) {
     return;
   }
   box.innerHTML = `<table><thead><tr>
-      <th>collection</th><th>maps</th><th>lazer</th><th>collection</th><th></th>
+      <th>collection</th><th>maps</th><th>collection entry</th><th></th>
     </tr></thead><tbody>
     ${cols
       .map((c) => {
-        const staged = c.batch && c.batch.maps
-          ? `<div class="muted">${c.batch.maps} staged</div>`
-          : '';
         const maps = c.maps_imported
-          ? `${c.maps_imported} imported${c.maps_deleted ? `<div class="muted">${c.maps_deleted} deleted · ${fmtBytes(c.maps_freed)} freed</div>` : ''}`
-          : `${c.maps_pushed} pushed${c.maps_push_failed ? ` <span style="color:var(--red)">(+${c.maps_push_failed} failed)</span>` : ''}`;
+          ? `${c.maps_imported} imported${c.maps_deleted ? `<div class="muted">${c.maps_deleted} files deleted · ${fmtBytes(c.maps_freed)} freed</div>` : ''}`
+          : '<span class="muted">waiting to be imported</span>';
         const coll = c.collection_in_lazer
           ? `<span style="color:var(--green)">in lazer</span><div class="muted">${esc(Object.keys(c.collection_in_lazer).join(', '))}</div>`
           : c.collection_imported ? '<span style="color:var(--green)">imported</span>'
@@ -228,15 +217,10 @@ function renderLibrary(cols) {
         return `<tr>
       <td><b>${esc(c.name)}</b><div class="muted">${c.collection_id ? `id ${c.collection_id} · ` : ''}${fmtBytes(c.size_bytes)}</div></td>
       <td>${c.beatmapsets}${c.expected_sets ? ` / ${c.expected_sets}` : ''} .osz<div class="muted">${maps}</div></td>
-      <td>${staged || '<span class="muted">—</span>'}</td>
       <td>${coll}</td>
       <td><div class="row" style="margin:0">
-        <button class="small" data-finalize="${esc(c.folder)}" title="import the maps, delete them once lazer confirms, write the collection — no in-game steps">finish in lazer</button>
+        <button class="small" data-finalize="${esc(c.folder)}" title="import the maps into lazer in parallel, delete each archive as it lands, then write the collection">import now</button>
         <button class="small ghost" data-writecoll="${esc(c.folder)}" title="write the collection entry straight into lazer's database">write collection</button>
-        <button class="small ghost" data-push="${esc(c.folder)}">push maps</button>
-        <button class="small ghost" data-batch="${esc(c.folder)}" title="unpack for lazer's import screen (one task, needs the import screen)">stage</button>
-        <button class="small ghost" data-steps="${esc(c.import_folder || c.folder)}">import steps</button>
-        ${c.batch && c.batch.maps ? `<button class="small ghost" data-cleanup="${esc(c.folder)}" title="delete the unpacked copies (keep the .osz library)">free space</button>` : ''}
         <button class="small ghost" data-open="${esc(c.folder)}">folder</button>
       </div></td>
     </tr>`;
@@ -257,15 +241,16 @@ function renderPipelineHint(p) {
   const box = $('#lib-pipeline');
   if (!box) return;
   if (p.pipeline_mode !== 'auto') {
-    box.textContent = p.pipeline_mode === 'wizard'
-      ? 'pipeline: stage for lazer\'s import screen (manual) — maps are unpacked, you click through the wizard'
-      : 'pipeline: download only — use the buttons below when you want maps in the game';
+    box.textContent = 'pipeline: download only — press "import now" on a collection when you want its maps in lazer';
     return;
   }
-  const parts = ['one click: maps imported and deleted as lazer confirms, collections written into lazer\'s database'];
-  if (p.collection_mode !== 'database') parts.push(`collection mode: ${p.collection_mode}`);
-  if (!p.delete_maps_after_import) parts.push('keeping the .osz files after import');
-  if (p.lazerdb && p.lazerdb.available === false) parts.push(`⚠ collection write unavailable (${p.lazerdb.reason}) — collections will wait for the import screen`);
+  const parts = ["one click: maps go straight into lazer's files in parallel, each archive deleted as soon as it lands"];
+  if (!p.stream_import) parts.push('importing once the download finishes (streaming off)');
+  if (p.close_lazer_before_import) parts.push('osu!lazer is closed automatically when it is in the way');
+  if (p.collection_mode !== 'database') parts.push(`collection entries: ${p.collection_mode}`);
+  if (p.lazerdb && p.lazerdb.available === false) {
+    parts.push(`⚠ direct import unavailable (${p.lazerdb.reason}) — build the helper with tools\\build.bat`);
+  }
   box.textContent = parts.join(' · ');
 }
 
@@ -277,7 +262,8 @@ async function runPurge(body) {
     const res = await api('/api/library/delete', body);
     out.textContent = `deleted ${res.removed} item(s), freed ${fmtBytes(res.freed)}`
       + (res.leftover && res.leftover.length ? ` — ${res.leftover.length} still in use (close lazer and retry)` : '');
-    ['purge-staged', 'purge-all'].forEach((id) => { const el = document.getElementById(id); if (el) el.disabled = true; });
+    const all = document.getElementById('purge-all');
+    if (all) all.disabled = true;
     refreshLibrary();
     refreshStatus();
   } catch (e) {
@@ -286,35 +272,27 @@ async function runPurge(body) {
 }
 
 async function purgeModal() {
-  let dry, dryStaged;
+  let dry;
   try {
-    [dry, dryStaged] = await Promise.all([
-      api('/api/library/delete', { scope: 'all', dry_run: true }),
-      api('/api/library/delete', { scope: 'staged', dry_run: true }),
-    ]);
+    dry = await api('/api/library/delete', { scope: 'all', dry_run: true });
   } catch (e) {
     return alert(e.message);
   }
-  const osz = Math.max(0, dry.freed - dryStaged.freed);
   showModal(
     'Delete downloaded data',
     `<p class="muted">Everything the app downloaded into<br><code>${esc(dry.download_dir)}</code></p>
      <div class="kv">
        <div><b>${dry.removed}</b><span>collections</span></div>
-       <div><b>${fmtBytes(osz)}</b><span>map archives</span></div>
-       <div><b>${fmtBytes(dryStaged.freed)}</b><span>staged copies</span></div>
        <div><b>${fmtBytes(dry.freed)}</b><span>total on disk</span></div>
      </div>
      <div class="note">Beatmaps already imported into lazer stay in lazer — this only clears the app's own files
-       (maps, staged copies, collection.db, bookkeeping). Your settings are kept.</div>
+       (map archives, collection.db, bookkeeping). Your settings are kept.</div>
      <div class="warn">Deleting is not reversible. The .osz files would have to be downloaded again.</div>
      <div class="row right">
-       <button id="purge-staged" class="ghost small">staged copies only (${fmtBytes(dryStaged.freed)})</button>
        <button id="purge-all" class="danger-solid small">delete everything (${fmtBytes(dry.freed)})</button>
      </div>
      <div id="purge-out" class="muted"></div>`
   );
-  $('#purge-staged').onclick = () => runPurge({ scope: 'staged' });
   $('#purge-all').onclick = () => runPurge({ scope: 'all' });
 }
 
@@ -325,37 +303,6 @@ function showModal(title, html) {
   $('#modal').classList.remove('hidden');
 }
 function hideModal() { $('#modal').classList.add('hidden'); }
-
-function stepsModal(folder) {
-  const staged = /\.lazer-import$/.test(folder);
-  showModal(
-    'Add this collection to osu!lazer',
-    `<p class="muted">Point lazer's import screen at:<br><code>${esc(folder)}</code>
-       <button class="small ghost" onclick="navigator.clipboard.writeText('${esc(folder).replace(/\\/g, '\\\\')}')">copy path</button></p>
-     <ol class="steps">
-       <li>In lazer press <code>Ctrl+O</code> for Settings → <b>General</b> → click <b>Run setup wizard</b>.</li>
-       <li>Click <b>Next</b> until the <b>Import</b> page.</li>
-       <li>Set <b>previous osu! install</b> to the folder above.</li>
-       <li>Click <b>Import content from previous version</b>.</li>
-     </ol>
-     ${staged
-       ? `<div class="note">This folder contains the unpacked maps <b>and</b> the collection entry, so that single pass imports
-            <b>every map as one task</b> ("Imported X of Y beatmaps") plus the collection — no per-map tasks.</div>`
-       : `<div class="note">This folder only carries the collection entry, so the import adds just the collection.
-            To get the maps in as one task too, press <b>stage (single task)</b> first.</div>`}
-     <div class="note">Lazer merges collections by name, so re-running this never duplicates anything.</div>
-     <div class="row right"><button id="btn-mark" class="ghost small">mark as imported</button></div>
-     <div id="mark-result" class="muted"></div>`
-  );
-  const collectionFolder = staged ? folder.replace(/\.lazer-import$/, '') : folder;
-  $('#btn-mark').onclick = async () => {
-    try {
-      await api('/api/mark-imported', { folder: collectionFolder, value: true });
-      $('#mark-result').textContent = 'marked — thanks!';
-      refreshLibrary();
-    } catch (e) { $('#mark-result').textContent = e.message; }
-  };
-}
 
 function settingsModal() {
   const s = state.settings;
@@ -368,28 +315,18 @@ function settingsModal() {
      <label class="field"><span>concurrent downloads (mirrors throttle above ~12)</span><input id="s-conc" type="text" value="${esc(s.concurrency)}"></label>
      <label class="field"><span>after a download finishes</span>
        <select id="s-pipeline">
-         <option value="auto" ${pipeline === 'auto' ? 'selected' : ''}>import maps into the game and add the collection — one click, nothing to do in-game</option>
-         <option value="wizard" ${pipeline === 'wizard' ? 'selected' : ''}>stage everything for lazer's own import screen (manual)</option>
-         <option value="manual" ${pipeline === 'manual' ? 'selected' : ''}>download only</option>
+         <option value="auto" ${pipeline === 'auto' ? 'selected' : ''}>import the maps into lazer and add the collection — one click, nothing to do in-game</option>
+         <option value="manual" ${pipeline === 'manual' ? 'selected' : ''}>download only (press “import now” in the Library when you want them in)</option>
        </select></label>
      <label class="field"><span>where the collection entry goes</span>
        <select id="s-collmode">
          <option value="database" ${collMode === 'database' ? 'selected' : ''}>straight into lazer's database (no in-game steps)</option>
-         <option value="wizard" ${collMode === 'wizard' ? 'selected' : ''}>leave it for lazer's import screen</option>
          <option value="off" ${collMode === 'off' ? 'selected' : ''}>don't add collections</option>
        </select></label>
-     <div class="check"><input id="s-delete" type="checkbox" ${s.delete_maps_after_import ? 'checked' : ''}><label for="s-delete">delete the .osz files once lazer confirms the import (frees the space as it goes)</label></div>
-     <label class="field"><span>import batch size (paths per game launch)</span><input id="s-chunk" type="text" value="${esc(s.import_chunk ?? 250)}"></label>
-     <label class="field"><span>maps → game via</span>
-       <select id="s-transport">
-         <option value="auto" ${(s.import_transport || 'auto') === 'auto' ? 'selected' : ''}>IPC pipe (fast), fall back to osu!.exe</option>
-         <option value="pipe" ${s.import_transport === 'pipe' ? 'selected' : ''}>only the IPC pipe</option>
-         <option value="launcher" ${s.import_transport === 'launcher' ? 'selected' : ''}>only osu!.exe forwarders (old way)</option>
-         <option value="direct" ${s.import_transport === 'direct' ? 'selected' : ''}>direct into lazer's files, in parallel (~8× faster, needs the game closed)</option>
-       </select></label>
-     <div class="check"><input id="s-stream" type="checkbox" ${s.stream_import ? 'checked' : ''}><label for="s-stream">hand maps to the game while they download (lazer imports ~1 map/s, so this runs it during the transfer)</label></div>
-     <label class="field"><span>launches at once / paths per launch</span><input id="s-pushpar" type="text" value="${esc(s.push_parallel ?? 8)}" style="width:60px"> <input id="s-pushbatch" type="text" value="${esc(s.push_batch_size ?? 20)}" style="width:60px"></label>
-     <div class="check"><input id="s-autostart" type="checkbox" ${s.auto_start_lazer ? 'checked' : ''}><label for="s-autostart">start osu!lazer automatically when it isn't running (it takes over the screen)</label></div>
+     <label class="field"><span>maps per import wave</span><input id="s-chunk" type="text" value="${esc(s.import_chunk ?? 250)}"></label>
+     <div class="check"><input id="s-stream" type="checkbox" ${s.stream_import ? 'checked' : ''}><label for="s-stream">import each wave while the download is still running (hides the import time inside the transfer)</label></div>
+     <div class="check"><input id="s-close" type="checkbox" ${s.close_lazer_before_import ? 'checked' : ''}><label for="s-close">close osu!lazer automatically when it's running (imports write straight into its files, so it must not be open)</label></div>
+     <div class="note">Maps always go straight into lazer's files with lazer's own importer, in parallel, and each archive is deleted as soon as it lands. That is the only import path.</div>
      <label class="field"><span>lazer executable (empty = auto-detect)</span><input id="s-exe" type="text" value="${esc(s.lazer_exe || '')}"></label>
      <label class="field"><span>collection name prefix (e.g. “o!c - ”)</span><input id="s-prefix" type="text" value="${esc(s.collection_prefix || '')}"></label>
      <div class="check"><input id="s-novideo" type="checkbox" ${s.no_video ? 'checked' : ''}><label for="s-novideo">download without video (smaller files)</label></div>
@@ -415,13 +352,9 @@ function settingsModal() {
       concurrency: Math.max(1, parseInt($('#s-conc').value, 10) || 10),
       pipeline_mode: $('#s-pipeline').value,
       collection_mode: $('#s-collmode').value,
-      delete_maps_after_import: $('#s-delete').checked,
       import_chunk: Math.max(1, parseInt($('#s-chunk').value, 10) || 250),
-      import_transport: $('#s-transport').value,
       stream_import: $('#s-stream').checked,
-      push_parallel: Math.max(1, parseInt($('#s-pushpar').value, 10) || 8),
-      push_batch_size: Math.max(1, parseInt($('#s-pushbatch').value, 10) || 20),
-      auto_start_lazer: $('#s-autostart').checked,
+      close_lazer_before_import: $('#s-close').checked,
       lazer_exe: $('#s-exe').value.trim(),
       collection_prefix: $('#s-prefix').value,
       no_video: $('#s-novideo').checked,
@@ -440,7 +373,7 @@ function settingsModal() {
 
 // ---------------------------------------------------------------- wiring
 document.addEventListener('click', async (ev) => {
-  const t = ev.target.closest('[data-fetch],[data-download],[data-push],[data-batch],[data-cleanup],[data-steps],[data-open],[data-cancel],[data-finalize],[data-writecoll]');
+  const t = ev.target.closest('[data-fetch],[data-download],[data-open],[data-cancel],[data-finalize],[data-writecoll]');
   if (!t) return;
   const btn = t;
   try {
@@ -462,24 +395,6 @@ document.addEventListener('click', async (ev) => {
       alert('collection in lazer: ' + JSON.stringify(res.changed));
       return void refreshLibrary();
     }
-    if (t.dataset.push || t.dataset.force) {
-      const folder = t.dataset.push || t.dataset.force;
-      t.disabled = true; t.textContent = 'pushing…';
-      await api('/api/push', { folder, force: !!t.dataset.force });
-      return void refreshJobs();
-    }
-    if (t.dataset.batch) {
-      t.disabled = true; t.textContent = 'staging…';
-      await api('/api/batch/prepare', { folder: t.dataset.batch });
-      return void refreshJobs();
-    }
-    if (t.dataset.cleanup) {
-      t.disabled = true; t.textContent = 'cleaning…';
-      const res = await api('/api/batch/cleanup', { folder: t.dataset.cleanup });
-      alert(`freed ${fmtBytes(res.freed)}`);
-      return void refreshLibrary();
-    }
-    if (t.dataset.steps) return void stepsModal(t.dataset.steps);
     if (t.dataset.open) return void api('/api/open', { folder: t.dataset.open });
     if (t.dataset.cancel) {
       await api('/api/jobs/cancel', { id: t.dataset.cancel });

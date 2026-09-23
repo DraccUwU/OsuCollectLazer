@@ -27,34 +27,19 @@ DEFAULTS: dict = {
     "verify_zips": True,
     "lazer_exe": "",
     # what happens after a download finishes:
-    #   "auto"   = import maps into the running game as one batch task, delete them once
-    #              lazer confirms the import, then write the collection into lazer's
-    #              database — no clicks anywhere (default)
-    #   "wizard" = stage maps + collection.db for lazer's own import screen (manual)
-    #   "manual" = download only; use the Library buttons
+    #   "auto"   = import the maps (and delete them) as they land, then write the
+    #              collection into lazer's database — no clicks anywhere (default)
+    #   "manual" = download only; use the "import now" button in the Library
     "pipeline_mode": "auto",
-    # where the collection entry goes: "database" (no in-game steps) | "wizard" | "off"
-    "collection_mode": "database",
-    # free the .osz files as soon as lazer confirms the import (they are huge)
-    "delete_maps_after_import": True,
-    "import_chunk": 250,
-    "import_confirm_timeout": 1800,
-    # how the maps are handed to lazer: paths per `osu!.exe` launch, and how many
-    # launches run at once (the forwarder's cold start is the bottleneck, not the game)
-    "push_batch_size": 20,
-    "push_parallel": 8,
-    # how the maps reach the game:
-    #   "auto"     = write straight to lazer's IPC pipe, fall back to the launcher
-    #   "pipe"     = only the pipe (fails loudly if unavailable)
-    #   "launcher" = only `osu!.exe <paths…>` (one launcher process per batch)
-    #   "direct"   = import into lazer's store + realm with the helper, in parallel
-    #                (~8x the game's serial import, needs osu!lazer closed)
-    "import_transport": "auto",
-    # hand maps to the game while they are still downloading: lazer imports serially
-    # (~1 map/s), so overlapping that with the transfer is free wall-clock time
+    # maps go straight into lazer's files + realm with the helper, which needs the game
+    # closed — closing it for you is part of "one click", so it happens unless disabled
+    "close_lazer_before_import": True,
+    # import each wave while the download is still running instead of after it
     "stream_import": True,
-    # starting osu!lazer takes over the screen; allow turning the auto-launch off
-    "auto_start_lazer": True,
+    # maps per helper run (bigger = more parallelism, bigger peak disk usage)
+    "import_chunk": 250,
+    # where the collection entry goes: "database" (helper writes it) | "off"
+    "collection_mode": "database",
     "mirrors": [
         "nerinyan",
         "beatconnect",
@@ -65,27 +50,37 @@ DEFAULTS: dict = {
         "osudl",
         "hinamizawa",
     ],
-    "auto_push_maps": True,
-    "push_batch_size": 20,
     "collection_prefix": "",
     "port": 8765,
 }
 
 
+# keys from older versions that no longer exist; dropped on load/save so a settings file
+# from a previous install can't resurrect behaviour the app doesn't have any more
+LEGACY_KEYS = (
+    "map_import_mode",
+    "import_transport",
+    "push_batch_size",
+    "push_parallel",
+    "delete_maps_after_import",
+    "import_confirm_timeout",
+    "auto_start_lazer",
+    "auto_push_maps",
+    "extract_workers",
+)
+
+
 def load_settings() -> dict:
     settings = dict(DEFAULTS)
-    raw: dict = {}
     if SETTINGS_PATH.exists():
         try:
             raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            settings.update(raw)
         except Exception:
             raw = {}
-    # migrate the old map_import_mode key
-    legacy = raw.get("map_import_mode")
-    if legacy and "pipeline_mode" not in raw:
-        settings["pipeline_mode"] = {"push": "auto", "batch": "wizard"}.get(legacy, "auto")
-    settings.setdefault("extract_workers", 4)
+        settings.update({k: v for k, v in raw.items() if k in DEFAULTS})
+        # "wizard" was a pipeline mode for the game's import screen; imports are direct now
+        if raw.get("pipeline_mode") == "wizard":
+            settings["pipeline_mode"] = "manual"
     return settings
 
 

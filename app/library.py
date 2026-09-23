@@ -5,8 +5,6 @@ import json
 import time
 from pathlib import Path
 
-from . import batch
-
 
 def _read_json(path: Path, default):
     try:
@@ -37,19 +35,6 @@ def load_import_state(folder: Path) -> dict:
 def save_import_state(folder: Path, state: dict) -> None:
     state["updated_at"] = time.time()
     _write_json(folder / "import-state.json", state)
-
-
-def record_push(folder: Path, pushed: list[str], failed: list[str], errors: list[str] | None = None) -> dict:
-    state = load_import_state(folder)
-    pushed_map = state.get("pushed") or {}
-    for name in pushed:
-        pushed_map[name] = "ok"
-    for name in failed:
-        pushed_map.setdefault(name, "failed")
-    state["pushed"] = pushed_map
-    state["last_push"] = {"at": time.time(), "failed": len(failed), "errors": (errors or [])[:5]}
-    save_import_state(folder, state)
-    return state
 
 
 def record_import(
@@ -98,10 +83,6 @@ def scan(download_dir: Path) -> list[dict]:
             continue
         meta = load_meta(folder)
         state = load_import_state(folder)
-        pushed_map = state.get("pushed") or {}
-        pushed = sum(1 for v in pushed_map.values() if v == "ok")
-        failed = sum(1 for v in pushed_map.values() if v == "failed")
-        staged = batch.state(folder)
         size = 0
         for f in osz:
             try:
@@ -121,19 +102,12 @@ def scan(download_dir: Path) -> list[dict]:
                 "size_bytes": size,
                 "has_collection_db": (folder / "collection.db").exists(),
                 "importable_by_lazer": _importable(folder),
-                "maps_pushed": pushed,
-                "maps_push_failed": failed,
                 "collection_imported": bool(state.get("collection_imported")),
                 "collection_in_lazer": state.get("collection_in_lazer"),
                 "last_import": state.get("last_import"),
                 "maps_imported": state.get("maps_imported", 0),
                 "maps_deleted": state.get("maps_deleted", 0),
                 "maps_freed": state.get("maps_freed", 0),
-                "batch": staged,
-                # what to point lazer's import screen at: staged folder takes maps
-                # (one task) + the collection in one pass; the plain folder is
-                # collection-only.
-                "import_folder": staged["root"] if staged["ready"] else str(folder),
                 "modified": folder.stat().st_mtime,
             }
         )
