@@ -23,3 +23,5 @@ jobs:
         run: python tests/test_lazerdb.py
       - name: server safety (request validation, delete and write guards)
         run: python tests/test_server_safety.py
+      - name: first-run setup (settings migration, helper install, wizard routes)
+        run: python tests/test_setup.py

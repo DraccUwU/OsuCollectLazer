@@ -18,18 +18,43 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 from . import config, lazer
 
-HELPER = Path(__file__).resolve().parent.parent / "tools" / "LazerDb" / "bin" / "Release" / "net10.0" / "LazerDb.exe"
 BACKUP_KEEP = 5
 TIMEOUT = 900
 
 
+def _helper_base() -> Path:
+    return config.bundle_dir() / "tools" / "LazerDb"
+
+
+def helper_candidates() -> list[Path]:
+    """Where the helper is looked for, in order.
+
+    A packaged build keeps a downloaded `LazerDb.exe` beside the app; a source checkout
+    has the `dotnet build` output (or a downloaded one dropped into the same place).
+    """
+    base = _helper_base()
+    return [base / "LazerDb.exe", base / "bin" / "Release" / "net10.0" / "LazerDb.exe"]
+
+
 def helper_path() -> Path | None:
-    return HELPER if HELPER.is_file() else None
+    for candidate in helper_candidates():
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def helper_install_dir() -> Path:
+    """Where `setup.py` puts a downloaded helper (gitignored in a checkout)."""
+    base = _helper_base()
+    if getattr(sys, "frozen", False):
+        return base
+    return base / "bin" / "Release" / "net10.0"
 
 
 def installed_osu_game_dll() -> Path | None:

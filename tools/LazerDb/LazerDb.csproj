@@ -28,6 +28,12 @@
     <PackageReference Include="ppy.osu.Game.Rulesets.Catch" Version="2026.916.0" />
     <PackageReference Include="ppy.osu.Game.Rulesets.Mania" Version="2026.916.0" />
     <PackageReference Include="System.Reflection.MetadataLoadContext" Version="8.0.0" />
+
+    <!-- Release builds drop osu.Game.Resources.dll from the published output (see
+         .github/workflows/release.yml): it is 128 MB of fonts, textures and audio meant for
+         lazer's own UI, and the headless import never loads it. If a future lazer release
+         ever does need it, that step is the thing to delete — the symptom would be a
+         FileNotFoundException naming this assembly. -->
   </ItemGroup>
 
 </Project>

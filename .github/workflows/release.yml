@@ -1,0 +1,73 @@
+name: release
+
+# Tagging v1.0.0 (or pushing any v* tag) publishes two assets:
+#   * OsuCollectLazer-win-x64.zip — the frozen app; no Python needed
+#   * LazerDb-win-x64.zip         — the import helper, self-contained; no .NET needed
+# The first-run wizard downloads the helper asset by that exact name, so the two jobs
+# and app/version.py have to agree on it (tests/test_setup.py enforces that).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  helper:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: publish the import helper (self-contained, win-x64)
+        run: dotnet publish tools/LazerDb/LazerDb.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o staging
+      # osu.Game.Resources.dll is 128 MB of fonts, textures and audio for lazer's own UI.
+      # The headless import never loads it: version check, realm read and a real map import
+      # into a copied realm all pass without it, and it is most of the download size.
+      - name: drop lazer's resource assembly (128 MB the headless import never touches)
+        run: |
+          if (Test-Path staging/osu.Game.Resources.dll) { Remove-Item staging/osu.Game.Resources.dll -Force; Write-Host "removed osu.Game.Resources.dll" }
+          else { Write-Host "osu.Game.Resources.dll not present - nothing to drop" }
+      - name: zip the helper
+        run: Compress-Archive -Path staging/* -DestinationPath LazerDb-win-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helper
+          path: LazerDb-win-x64.zip
+
+  app:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+      - name: freeze the app
+        run: python -m PyInstaller --noconfirm packaging/OsuCollectLazer.spec
+      - name: add the docs to the folder that gets zipped
+        run: Copy-Item README.md, LICENSE dist/OsuCollectLazer/
+      - name: zip the app
+        run: Compress-Archive -Path dist/OsuCollectLazer -DestinationPath OsuCollectLazer-win-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app
+          path: OsuCollectLazer-win-x64.zip
+
+  publish:
+    needs: [helper, app]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            OsuCollectLazer-win-x64.zip
+            LazerDb-win-x64.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true

@@ -10,6 +10,7 @@ import mimetypes
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -18,11 +19,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import collectiondb, collector, config, lazer, lazerdb, library
+from . import collectiondb, collector, config, lazer, lazerdb, library, setup, version
 from .downloader import DownloadJob, Downloader
 from .mirrors import MIRRORS, MirrorPool
 
-WEB_DIR = Path(__file__).resolve().parent / "web"
+WEB_DIR = (
+    config.resource_dir() / "app" / "web"
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent / "web"
+)
 SETTINGS = config.load_settings()
 LAST_POOL: MirrorPool | None = None  # most recent download pool, for live mirror stats
 
@@ -630,8 +635,12 @@ def delete_library(scope: str = "all", folder: str | None = None, dry_run: bool 
 
 
 def api_get(path: str, query: dict) -> tuple[int, dict]:
+    if path == "/api/setup":
+        return 200, setup.state()
     if path == "/api/status":
         return 200, {
+            "version": version.__version__,
+            "setup_complete": bool(SETTINGS.get("setup_complete")),
             "lazer": lazer.info(SETTINGS),
             "settings": SETTINGS,
             "lazerdb": lazerdb_status(),
@@ -726,6 +735,25 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
             cancel.set()
             return 200, {"cancelled": True}
         return 404, {"error": "unknown or finished job"}
+    if path == "/api/setup/pick":
+        kind = str(body.get("kind") or "folder")
+        if kind not in ("folder", "file"):
+            return 400, {"error": "kind must be folder or file"}
+        return 200, {"path": setup.pick_path(kind, str(body.get("start") or "") or None)}
+    if path == "/api/setup/helper":
+        try:
+            return 200, setup.install_helper(str(body.get("method") or "auto"))
+        except ValueError as exc:
+            return 400, {"error": str(exc)}
+        except RuntimeError as exc:
+            return 409, {"error": str(exc)}
+        except Exception as exc:
+            return 500, {"error": f"{type(exc).__name__}: {exc}"}
+    if path == "/api/setup/finish":
+        saved = setup.apply_settings(body.get("settings") or {})
+        SETTINGS.clear()
+        SETTINGS.update(saved)
+        return 200, {"settings": SETTINGS, "setup_complete": True}
     if path == "/api/settings":
         updates = body.get("settings") or {}
         for key in config.DEFAULTS:
@@ -930,6 +958,9 @@ class Server(ThreadingHTTPServer):
 def main(argv: list[str] | None = None) -> int:
     port = int(SETTINGS.get("port", 8765))
     argv = argv if argv is not None else []
+    if "--version" in argv:
+        print(f"OsuCollectLazer {version.__version__}")
+        return 0
     if "--port" in argv:
         port = int(argv[argv.index("--port") + 1])
     try:
@@ -942,7 +973,7 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://127.0.0.1:{port}/"
     status = lazerdb_status()
     helper = "ready" if status.get("available") else f"NOT READY ({status.get('reason', 'unknown')})"
-    print(f"OsuCollectLazer running at {url}")
+    print(f"OsuCollectLazer {version.__version__} running at {url}")
     print(f"  download dir : {_download_root()}")
     print(f"  lazer        : {lazer.info(SETTINGS)}")
     print(f"  map import   : direct + parallel via the helper — {helper}")

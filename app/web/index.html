@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>OsuCollectLazer — osu!collector → osu!lazer</title>
+<link rel="icon" href="favicon.ico" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -18,6 +19,7 @@
   <div class="head-right">
     <div id="lazer-pill" class="pill pill-muted" title="checking osu!lazer…"><span class="dot"></span>checking…</div>
     <button id="btn-how" class="ghost small" title="what one click does">?</button>
+    <button id="btn-setup" class="ghost small" title="run setup again (installs or refreshes the import helper)">Setup</button>
     <button id="btn-settings" class="ghost small">Settings</button>
   </div>
 </header>
@@ -76,8 +78,10 @@
   </div>
 </div>
 
+<div id="wizard" class="wizard hidden"></div>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script src="app.js"></script>
+<script src="wizard.js"></script>
 </body>
 </html>

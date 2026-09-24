@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 APP_NAME = "OsuCollectLazer"
@@ -15,6 +16,29 @@ def app_dir() -> Path:
     d = root / APP_NAME
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def bundle_dir() -> Path:
+    """The app's folder as the user sees it: the checkout, or the folder holding the .exe.
+
+    A packaged build (PyInstaller) runs from a frozen interpreter, so `__file__` points
+    inside the bundle; the import helper is installed next to the executable, where a
+    user can see it.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+def resource_dir() -> Path:
+    """Where the app's *bundled* files live (the web UI, docs).
+
+    PyInstaller keeps those in `_internal/` next to the executable (`sys._MEIPASS`), which
+    is not the same folder as `bundle_dir()` — writing the helper there would hide it.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parent.parent
 
 
 SETTINGS_PATH = app_dir() / "settings.json"
@@ -52,6 +76,9 @@ DEFAULTS: dict = {
     ],
     "collection_prefix": "",
     "port": 8765,
+    # written by the first-run wizard; an install that predates the wizard counts as
+    # already set up (see load_settings), so existing users are never sent back to it
+    "setup_complete": False,
 }
 
 
@@ -77,6 +104,9 @@ def load_settings() -> dict:
             raw = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
         except Exception:
             raw = {}
+        # a settings file that predates the first-run wizard belongs to a working
+        # install — the wizard is for fresh ones
+        settings["setup_complete"] = True
         settings.update({k: v for k, v in raw.items() if k in DEFAULTS})
         # "wizard" was a pipeline mode for the game's import screen; imports are direct now
         if raw.get("pipeline_mode") == "wizard":
@@ -87,6 +117,9 @@ def load_settings() -> dict:
 def save_settings(settings: dict) -> None:
     merged = dict(DEFAULTS)
     merged.update({k: v for k, v in settings.items() if k in DEFAULTS or k.startswith("_")})
+    if "setup_complete" not in settings:
+        # saving settings from the app must never send an install back to the wizard
+        merged["setup_complete"] = load_settings().get("setup_complete", False)
     SETTINGS_PATH.write_text(json.dumps(merged, indent=2), encoding="utf-8")
 
 

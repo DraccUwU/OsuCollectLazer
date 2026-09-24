@@ -502,6 +502,7 @@ $('#btn-fetch').onclick = () => fetchRef();
 $('#ref').addEventListener('keydown', (e) => { if (e.key === 'Enter') fetchRef(); });
 $('#btn-settings').onclick = settingsModal;
 $('#btn-how').onclick = howModal;
+$('#btn-setup').onclick = () => { if (window.Wizard) window.Wizard.open(); };
 $('#btn-purge').onclick = purgeModal;
 $('#modal-close').onclick = hideModal;
 $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') hideModal(); });

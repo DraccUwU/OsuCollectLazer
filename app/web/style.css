@@ -220,6 +220,20 @@ ol.steps b { color: #ffd9e9; }
 .toast.ok { border-color: #2c5336; color: #d3ecd8; }
 .toast.bad { border-color: #573232; color: #f2d2d2; }
 
+/* ---------------------------------------------------------------- setup wizard */
+.wizard { position: fixed; inset: 0; background: #05060ae6; display: grid; place-items: center; z-index: 40; padding: 18px; }
+.wizard-box {
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
+  padding: 16px 20px 18px; width: min(660px, 94vw); max-height: 88vh; overflow: auto;
+  box-shadow: 0 18px 60px #00000099;
+}
+.wizard-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.wizard-title { font-weight: 650; font-size: 15px; margin-right: 8px; letter-spacing: -.01em; }
+.wiz-rail { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.wizard-body h3 { margin-bottom: 6px; }
+.wizard-body .muted { display: block; margin-bottom: 12px; }
+.wizard-box .row { margin-bottom: 10px; }
+
 @media (max-width: 640px) {
   header { padding: 10px 12px; }
   main { padding: 12px; }

@@ -8,10 +8,23 @@ lazer has taken it, and writes the collection entry, so the collection shows up 
 Collections on its own.
 
 ```
-start.bat          double-click → opens the app at http://127.0.0.1:8765/
+Download the latest release, unzip it, run OsuCollectLazer.exe
 ```
 
-## Quick start
+## Install (Windows)
+
+1. Grab `OsuCollectLazer-win-x64.zip` from the
+   [latest release](https://github.com/DraccUwU/OsuCollectLazer/releases) and unzip it
+   anywhere you like.
+2. Run **OsuCollectLazer.exe** — the browser opens on its own.
+3. The **setup wizard** finds osu!lazer, installs the import helper (about 70 MB, fetched
+   from the matching release) and asks where downloads should go. That is the whole
+   install: no Python, no .NET, nothing to compile.
+
+Windows may show "Windows protected your PC" the first time, because the exe is not
+code-signed: *More info → Run anyway*.
+
+## Run from source
 
 ```bash
 git clone https://github.com/DraccUwU/OsuCollectLazer.git
@@ -41,10 +54,12 @@ own database while the helper does) — see [Closing the game](#closing-the-game
 ```bash
 python tests/test_collectiondb.py    # 14 checks, incl. byte-identity with ppy/osu's fixture
 python tests/test_lazerdb.py         # 13 checks for the import plumbing
-python tests/test_server_safety.py   # 21 checks: request validation, delete and write guards
+python tests/test_server_safety.py   # 31 checks: request validation, delete and write guards
+python tests/test_setup.py           # 21 checks: settings migration, helper install, wizard routes
 ```
 
-All of them run on every push in CI (`.github/workflows/tests.yml`).
+All of them run on every push in CI (`.github/workflows/tests.yml`); tagging `v*` also
+builds and publishes the release (`release.yml`).
 
 ## What it does
 
@@ -169,9 +184,13 @@ curl -X POST localhost:8765/api/library/delete -H 'Content-Type: application/jso
 
 ## Requirements
 
-* Windows, Python 3.10+ (only for the local server; no third-party packages)
-* osu!lazer — the app closes it when it needs to import, and never starts it
-* .NET **10** SDK — to build `tools/LazerDb`, the helper that does the importing
+From a release: Windows, and osu!lazer installed. That is it — the wizard fetches the
+helper itself.
+
+From source: Windows, Python 3.10+ (standard library only), osu!lazer, and the .NET
+**10** SDK to build `tools/LazerDb` (or let the wizard download the published helper).
+
+The app closes osu!lazer when it imports, and never starts it.
 
 ## Layout
 
@@ -185,12 +204,42 @@ app/
   lazer.py         lazer detection, data-directory lookup, closing the game for imports
   lazerdb.py       drives tools/LazerDb: parallel map import + realm collection write
   library.py       download folder scanning / import state
-  web/             the UI (vanilla HTML/CSS/JS)
+  setup.py         first-run wizard backend: detection, native pickers, helper install
+  version.py       version + release coordinates (asset names CI publishes)
+  launcher.py      entry point of the packaged .exe (logging, single instance)
+  web/             the UI (vanilla HTML/CSS/JS) + the setup wizard
 tools/LazerDb/     small .NET console app: parallel BeatmapImporter + LegacyCollectionImporter
 tools/build.bat    build it (dotnet build -c Release)
+packaging/         PyInstaller spec, Windows version resource, icon generator
 tests/test_collectiondb.py   14 checks incl. byte-identity with ppy/osu's own fixture
 tests/test_lazerdb.py        13 checks for the import plumbing
+tests/test_server_safety.py  31 checks for the API, deletes and lazer writes
+tests/test_setup.py          21 checks for the wizard, migration and helper install
 ```
+
+## Releasing
+
+The version lives in `app/version.py` (and `packaging/version_info.txt` for the exe
+properties). Bump both, then:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0
+```
+
+`.github/workflows/release.yml` then builds the frozen app (`OsuCollectLazer-win-x64.zip`,
+about 11 MB) and the self-contained helper (`LazerDb-win-x64.zip`, about 65 MB — the full
+publish is 170 MB) and attaches both to the release. Before zipping, the workflow deletes
+`osu.Game.Resources.dll` (128 MB of fonts and textures for lazer's own UI, which the
+headless import never loads — verified against version detection, a realm read and a real
+map import into a copied realm).
+The wizard looks for `LazerDb-win-x64.zip` by name — `tests/test_setup.py` fails if the
+workflow and `app/version.py` ever disagree.
+
+The helper is built against a pinned `ppy.osu.Game`, and lazer's realm schema changes with
+it: when a lazer update moves the schema, bump the package versions in
+`tools/LazerDb/LazerDb.csproj`, tag a release, and existing installs pick the new helper up
+through **Setup** in the header (the app refuses to write into a database it does not
+match).
 
 ## Notes from building this
 

@@ -13,6 +13,10 @@ __pycache__/
 tools/LazerDb/bin/
 tools/LazerDb/obj/
 
+# packaging output (PyInstaller)
+build/
+dist/
+
 # editors / OS
 .vscode/
 .idea/
