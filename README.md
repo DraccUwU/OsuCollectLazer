@@ -1,65 +1,121 @@
 # OsuCollectLazer
 
 Browse **osu!collector.com** collections and get them into **osu!lazer** with one click:
-the app downloads the collection from public beatmap mirrors, imports every beatmapset
-straight into lazer's own files and database with lazer's own importer — in parallel, with
-the game closed, no import screen and no in-game steps — deletes each archive the moment
-lazer has taken it, and writes the collection entry, so the collection shows up under
-Collections on its own.
+the app downloads a collection from public beatmap mirrors, imports every beatmapset with
+lazer's own importer — in parallel, with the game closed, no import screen and no in-game
+steps — deletes each archive the moment lazer has taken it, and writes the collection entry,
+so the collection shows up under Collections on its own.
 
-```
-Download the latest release, unzip it, run OsuCollectLazer.exe
-```
+![The app window with the first-run setup wizard open](docs/window.png)
 
 ## Install (Windows)
 
-Everything on the [latest release](https://github.com/DraccUwU/OsuCollectLazer/releases) —
-no Python, no .NET, nothing to compile either way:
+Three downloads on the [latest release](https://github.com/DraccUwU/OsuCollectLazer/releases),
+none of them needing Python or .NET:
 
 | Download | What it is |
 |---|---|
-| `OsuCollectLazer-Setup.exe` | **recommended**: installs in one go (no admin prompt), adds Start-menu and desktop shortcuts, and uninstalls from *Apps & features* |
-| `OsuCollectLazer-win-x64.zip` | portable: unzip anywhere and run the exe. Starts instantly; good for a USB stick |
-| `OsuCollectLazer.exe` | a single file with nothing to unzip, but it unpacks itself into `%TEMP%` on *every* launch — with real-time antivirus the first window can take a minute or more |
+| `OsuCollectLazer-Setup.exe` | **recommended** — installs in one go (no admin prompt), adds Start-menu and desktop shortcuts, uninstalls from *Apps & features* |
+| `OsuCollectLazer-win-x64.zip` | portable — unzip anywhere and run the exe. Starts instantly; fine on a USB stick |
+| `OsuCollectLazer.exe` | a single file, nothing to unzip. It unpacks itself into `%TEMP%` on *every* launch, so with real-time antivirus the first window can take a minute or more |
 
-Then the **setup wizard** finds osu!lazer, installs the import helper (about 70 MB, one
-time, fetched from the matching release) and asks where downloads should go.
+First run opens a **setup wizard**: it finds osu!lazer, downloads the import helper
+(~70 MB, one time) and asks where downloads should go. The app runs in its own Edge WebView2
+window rather than a browser tab; the last wizard step and *Settings → App* add the
+desktop/Start-menu shortcuts, and `--browser` opens a browser tab instead (which also
+happens by itself if WebView2 isn't installed).
 
-The app runs in its own window (Edge WebView2), not a browser tab; the last wizard step and
-*Settings → App* can put a shortcut on your **desktop** or in the **Start menu**. If
-WebView2 is missing, or you pass `--browser`, it opens your default browser instead —
-either way the UI is the same local page.
-
-Windows may show "Windows protected your PC" the first time, because the exe is not
-code-signed: *More info → Run anyway*.
+Windows may show "Windows protected your PC" once, because the exe isn't code-signed:
+*More info → Run anyway*.
 
 ## Run from source
 
 ```bash
 git clone https://github.com/DraccUwU/OsuCollectLazer.git
 cd OsuCollectLazer
-
-# the one binary the app uses: lazer's own importers (BeatmapImporter for maps,
-# LegacyCollectionImporter for the collection entry), driven in parallel. Needs the
-# .NET 10 SDK.  Windows: tools\build.bat   ·   anywhere: dotnet build -c Release tools/LazerDb
-dotnet build -c Release tools/LazerDb
-
-# run it
-start.bat            # or:  python -m app.server
+dotnet build -c Release tools/LazerDb   # the helper; needs the .NET 10 SDK
+start.bat                               # or: python -m app.server
 ```
 
-From source the UI opens in a browser tab — the native window needs pywebview, which only
-the release bundles. In the packaged app `--browser` forces that browser path too.
+The app itself is plain Python standard library — no pip install, no build step. From source
+the UI opens in a browser tab (the native window needs pywebview, which only the release
+bundles). The helper is required for importing; without it the Library says so, and the
+wizard can download or build it.
 
-Then paste a collection link (or search osu!collector) and hit **Download** — the maps are
-imported and deleted as they arrive, and the collection appears in lazer. Everything is
-plain Python standard library: no pip install, no build step for the app itself.
+## What it does
 
-The helper is required: map imports and collection writes both go through it, and the app
-says so in the Library if it is missing (`build the helper with tools\build.bat`).
+1. **Find** — search osu!collector in the app, or paste a collection URL/ID.
+2. **Download** — every beatmapset in the collection, in parallel, from a pool of public
+   mirrors (nerinyan, beatconnect, catboy.best, osu.direct, sayobot, nekoha, osudl,
+   hinamizawa). Archives are verified, interrupted runs resume, files already on disk are
+   skipped.
+3. **Import the maps** — the helper runs lazer's own `BeatmapImporter` over each batch,
+   writing straight into lazer's file store and realm: ~5–6 maps/s, scaling with cores.
+4. **Delete them again** — lazer's importer deletes each archive it takes, so a collection
+   never has to fit on disk twice. An archive whose import *failed* is never deleted: it
+   stays for a retry and is named in the job log.
+5. **Add the collection** — written into lazer's realm through lazer's own
+   `LegacyCollectionImporter` (a timestamped `client.realm` backup is taken first, and the
+   write is skipped entirely if the installed lazer's schema version doesn't match).
 
-Expect the app to **close osu!lazer** when it imports (the game must not be writing to its
-own database while the helper does) — see [Closing the game](#closing-the-game).
+One click — **Download** in the search results or on a collection page — does 2→5. Two
+settings change the shape of it:
+
+| setting | default | what it does |
+|---|---|---|
+| *after a download finishes* | `auto` | import → delete → write the collection. `manual` = download only, then **import now** in the Library |
+| *import each wave while the download is still running* | on | the first waves are imported *during* the transfer, hiding the import inside the download |
+
+## Speed
+
+From the app's own job log, measured on one machine:
+
+| path | rate |
+|---|---|
+| **direct import** (helper + `Parallel.ForEachAsync`) | **~5–6 maps/s**, scales with cores |
+| through the running game (one path per IPC message) | ~1–2 maps/s |
+| handing paths to the game's IPC pipe | 600–680 paths/s — never the bottleneck |
+
+A 51-map collection end to end: download 27 s, maps imported in waves from second 8,
+everything imported, deleted and the collection written 34 s after the click. Downloads run
+10-wide (peak 18.6 MB/s, median 6.9 MB/s observed): the pool probes every mirror at the start
+of a run, favours the fastest and demotes the ones that error.
+
+## Closing the game
+
+Two writers on one realm is a corrupt realm, so imports need lazer **closed**. The app closes
+it for you (*close osu!lazer automatically*, on by default): a graceful close first, and —
+because a busy game can ignore that for minutes — termination after ~12 s, with the job log
+saying which of the two happened. With the setting off, imports refuse to start while the
+game runs and the archives stay on disk. **Write collection** follows the same rule (the game
+is re-checked immediately before the write) and answers 409 rather than writing blind.
+
+`LazerDb --check-archive <file.osz>` explains why a particular archive won't import — useful
+when a mirror serves something 7-zip opens but lazer does not.
+
+## Where downloads go
+
+`Documents\OsuCollectLazer\collections\<name>-<id>\`:
+
+| file | purpose |
+|---|---|
+| `*.osz` | the beatmapsets — **deleted again** as the importer takes them |
+| `collection.db` | the collection entry (kept — a few KB, documents what the folder was) |
+| `osu!.name.cfg` | empty marker that makes lazer accept the folder as a "previous osu! install" |
+| `meta.json`, `download-state.json`, `import-state.json` | resume bookkeeping, plus what the last import did |
+
+**Library → Delete all downloads** shows a summary first (collections, total on disk) and then
+deletes every collection folder — beatmaps already in lazer stay, settings are never touched.
+It refuses to run while a job is going (409), can be limited to a single collection folder
+inside the download root (the root itself is refused), and has a dry-run mode:
+
+```bash
+curl -X POST localhost:8765/api/library/delete -H 'Content-Type: application/json' \
+     -d '{"scope":"all","dry_run":true}'
+```
+
+The API takes JSON only, refuses cross-origin callers, and requires `scope` to be stated
+explicitly — a request that forgets it gets 400 instead of quietly clearing the library.
 
 ## Tests
 
@@ -67,251 +123,89 @@ own database while the helper does) — see [Closing the game](#closing-the-game
 python tests/test_collectiondb.py    # 14 checks, incl. byte-identity with ppy/osu's fixture
 python tests/test_lazerdb.py         # 13 checks for the import plumbing
 python tests/test_server_safety.py   # 31 checks: request validation, delete and write guards
-python tests/test_setup.py           # 21 checks: settings migration, helper install, wizard routes
+python tests/test_setup.py           # 37 checks: wizard, migration, helper install, shortcuts
 ```
 
-All of them run on every push in CI (`.github/workflows/tests.yml`); tagging `v*` also
-builds and publishes the release (`release.yml`).
-
-## What it does
-
-1. **Find** — search osu!collector from the app, or paste a collection URL/ID.
-2. **Download** — pulls every beatmapset in the collection in parallel from a pool of
-   public mirrors (nerinyan, beatconnect, catboy.best, osu.direct, sayobot, nekoha,
-   osudl, hinamizawa), verifying each archive, resuming interrupted runs and skipping
-   files that are already on disk.
-3. **Import the maps** — the helper runs lazer's own `BeatmapImporter` over each batch with
-   `Parallel.ForEachAsync`, writing straight into lazer's file store and realm. ~5–6 maps/s
-   and it scales with cores.
-4. **Delete them again** — the importer deletes each archive it takes
-   (`ShouldDeleteArchive`), so a huge collection never has to fit on disk twice; the job
-   accounts for the freed space batch by batch. An archive whose import *failed* is never
-   deleted — it stays for a retry and is named in the job log.
-5. **Add the collection entry** — written into lazer's realm through lazer's own
-   `LegacyCollectionImporter` (a timestamped `client.realm` backup is taken first, and the
-   write is skipped entirely if the installed lazer's schema version doesn't match the
-   helper's).
-
-The whole thing is one click: **Download** (in the search results or a collection page)
-runs 2→5 by itself. Two settings change the shape of it:
-
-| setting | default | what it does |
-|---|---|---|
-| *after a download finishes* | `auto` | import → delete → write the collection. `manual` = download only, then press **import now** in the Library |
-| *import each wave while the download is still running* | on | the first waves are imported *during* the transfer, so the import is hidden inside the download instead of added to it |
-
-With both at their defaults the app holds **one** import job per collection and the maps
-are gone from disk as the last wave lands.
-
-## Import speed
-
-Measured on this machine, from the app's own job log:
-
-| path | rate |
-|---|---|
-| **direct import** (what the app does: helper + `Parallel.ForEachAsync`) | **~5–6 maps/s** — 12 maps in 2.2 s; scales with cores |
-| through the running game (what the app used to do) | ~1–2 maps/s — measured 0.73–1.85 maps/s |
-| handing paths to the game's IPC pipe | 600–680 maps/s (never the bottleneck) |
-
-Why the game is the slow half: lazer posts **one progress task per import call**
-(`RealmArchiveModelImporter.Import`), and its IPC channel carries exactly one path per
-message, so the running game imports strictly one map at a time. Only lazer's import
-*screen* batches a folder into a single `Import` call, and that needs clicks — which is
-exactly the trade this app refuses to make. Importing outside the game sidesteps it: the
-helper calls the same importer over the whole batch at once.
-
-A 51-map collection end to end: download 27 s, maps imported in waves from second 8,
-everything imported, deleted and the collection written 34 s after the click.
-
-### Closing the game
-
-Two writers on one realm is a corrupt realm, so imports need lazer **closed**. The app
-closes it for you (`close osu!lazer automatically` in Settings, on by default):
-
-* first a graceful close — the same request as clicking the X — for up to ~12 s;
-* a busy game (mid library scan, mid import, a beatmap running) can ignore that for
-  minutes, so after that it is terminated outright. The job log says so:
-  `osu!lazer ignored a normal close request (it was busy), so it was terminated —
-  anything unsaved in the game is gone`.
-
-Turn the setting off and imports instead refuse to start while the game is running (the
-job stops with `close osu!lazer automatically is turned off`, and the archives stay on
-disk) — nothing is ever deleted on a failed import. The same rule covers the collection
-entry: the realm is only written with the game closed (re-checked right before the write,
-in case the game was opened again mid-download), so **write collection** either closes the
-game or answers 409.
-
-Failed imports are kept, not deleted: the archive stays on disk for a retry and is named
-in the job log (`kept <file> (import failed — the file stays for a retry)`), while the
-archives lazer actually took are removed and their size counted as freed.
-
-`LazerDb --check-archive <file.osz>` explains why a particular archive won't import (it
-prints what SharpCompress and lazer's own reader see) — useful when a mirror serves
-something that unzips in 7-zip but not in lazer.
-
-Downloaded collections land in `Documents\OsuCollectLazer\collections\<name>-<id>\`:
-
-| file | purpose |
-|---|---|
-| `*.osz` | the beatmapsets — **deleted again** as the importer takes them; when the import is done the folder no longer holds the map files |
-| `collection.db` | the collection entry (kept — it's a few KB and documents what the folder was) |
-| `osu!.name.cfg` | empty marker that makes lazer accept the folder as a "previous osu! install" |
-| `meta.json`, `download-state.json`, `import-state.json` | bookkeeping for resume, plus what the last import did |
-
-## Download speed notes
-
-Downloads run 10-wide by default (Settings → concurrent downloads) across a pool that
-probes every mirror at the start of a run and then favours whichever mirrors measured
-fastest, demoting ones that error. Observed on a 27-set collection: peak 18.6 MB/s,
-median transfer 6.9 MB/s, 27/27 sets with zero failures. Per-run timeline (mirror, bytes,
-seconds) is in the job JSON at `/api/jobs`; live mirror stats at `/api/mirrors`.
-
-The download is usually the slower half now: a 4-set collection goes from click to
-"imported and deleted" in ~3 seconds, and for big collections the import runs inside the
-download rather than after it.
-
-## Deleting downloads
-
-The pipeline deletes each archive the moment it is imported, so normally there is nothing
-left to clean up. For everything else, **Library → Delete all downloads** shows a summary
-first (collections, total on disk) and then deletes every collection folder in the
-download directory — map archives, `collection.db`, bookkeeping. Beatmaps already inside
-lazer stay there, and the app's settings are never touched.
-
-It refuses to run while a download or import job is still going (409), can be limited to a
-single folder (a collection folder *inside* the download directory — the root itself is
-refused, and a single-collection delete never sweeps the root), and has a server-side
-dry-run mode. The API takes JSON requests only (`Content-Type: application/json`), refuses
-cross-origin callers, and requires `scope` to be stated explicitly: a request that forgets
-it is rejected (400) instead of quietly clearing the library.
-
-```bash
-curl -X POST localhost:8765/api/library/delete -H 'Content-Type: application/json' \
-     -d '{"scope":"all","dry_run":true}'      # report only
-curl -X POST localhost:8765/api/library/delete -H 'Content-Type: application/json' \
-     -d '{"scope":"all"}'                     # delete everything
-curl -X POST localhost:8765/api/library/delete -H 'Content-Type: application/json' \
-     -d '{"scope":"all","folder":"C:/.../collections/warmup-2179"}'   # one collection
-```
+All four run in CI on every push; tagging `v*` builds and publishes the release.
 
 ## Requirements
 
-From a release: Windows, and osu!lazer installed. That is it — the wizard fetches the
-helper itself.
-
-From source: Windows, Python 3.10+ (standard library only), osu!lazer, and the .NET
-**10** SDK to build `tools/LazerDb` (or let the wizard download the published helper).
-
-The app closes osu!lazer when it imports, and never starts it.
+**From a release:** Windows and osu!lazer — the wizard fetches the helper itself.
+**From source:** also Python 3.10+ (standard library only) and the .NET 10 SDK to build
+`tools/LazerDb`. The app closes osu!lazer when it imports, and never starts it.
 
 ## Layout
 
 ```
 app/
   server.py        local HTTP server + JSON API (127.0.0.1:8765, single instance)
-  collector.py     osu!collector client: /api/collections/{id} + /all?search= listing
+  collector.py     osu!collector client: collection fetch + search
   mirrors.py       mirror URL templates, rotation, per-mirror cooldowns
-  downloader.py    parallel downloader, integrity checks, resume, stall guards
+  downloader.py    parallel downloader: integrity checks, resume, stall guards
   collectiondb.py  legacy collection.db writer/reader (byte-exact, see tests)
-  lazer.py         lazer detection, data-directory lookup, closing the game for imports
+  lazer.py         lazer detection, data directory, closing the game for imports
   lazerdb.py       drives tools/LazerDb: parallel map import + realm collection write
   library.py       download folder scanning / import state
-  setup.py         first-run wizard backend: detection, native pickers, helper install
-  version.py       version + release coordinates (asset names CI publishes)
-  launcher.py      entry point of the packaged .exe (logging, single instance)
+  setup.py         wizard backend: detection, native pickers, helper install
+  shortcuts.py     desktop / Start-menu shortcuts
+  version.py       version + the asset names CI publishes
+  launcher.py      entry point of the packaged exe (window, logging, single instance)
   web/             the UI (vanilla HTML/CSS/JS) + the setup wizard
-tools/LazerDb/     small .NET console app: parallel BeatmapImporter + LegacyCollectionImporter
-tools/build.bat    build it (dotnet build -c Release)
-packaging/         PyInstaller spec, Windows version resource, icon generator
-tests/test_collectiondb.py   14 checks incl. byte-identity with ppy/osu's own fixture
-tests/test_lazerdb.py        13 checks for the import plumbing
-tests/test_server_safety.py  31 checks for the API, deletes and lazer writes
-tests/test_setup.py          21 checks for the wizard, migration and helper install
+tools/LazerDb/     .NET console app: parallel BeatmapImporter + LegacyCollectionImporter
+packaging/         PyInstaller specs (folder + single file), Inno Setup script, icon, versions
+tests/             14 + 13 + 31 + 37 checks, all run in CI
 ```
 
 ## Releasing
 
-The version lives in `app/version.py` (and `packaging/version_info.txt` for the exe
-properties). Bump both, then:
+The version lives in `app/version.py` and `packaging/version_info.txt`. Bump both, then:
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0
+git tag v1.1.0 && git push origin v1.1.0
 ```
 
-`.github/workflows/release.yml` then builds and attaches four downloads: the installer
-(`OsuCollectLazer-Setup.exe`, compiled with Inno Setup 6.7.3, pinned in the workflow), the
-single-file build (`OsuCollectLazer.exe`), the portable build
-(`OsuCollectLazer-win-x64.zip`, about 11 MB) and the self-contained helper
-(`LazerDb-win-x64.zip`, about 65 MB — the full publish is 170 MB). The installer's version
-is passed in from `app/version.py`, so the two cannot drift apart. Before zipping, the workflow deletes
-`osu.Game.Resources.dll` (128 MB of fonts and textures for lazer's own UI, which the
-headless import never loads — verified against version detection, a realm read and a real
-map import into a copied realm).
-The wizard looks for `LazerDb-win-x64.zip` by name — `tests/test_setup.py` fails if the
-workflow and `app/version.py` ever disagree.
+CI builds and attaches four downloads: the installer (compiled with Inno Setup, version
+passed in from `app/version.py`), the single-file build, the portable zip, and the
+self-contained helper. Before zipping it drops `osu.Game.Resources.dll` — 128 MB of fonts and
+textures for lazer's own UI, which the headless import never loads. The wizard looks for
+`LazerDb-win-x64.zip` by name, and `tests/test_setup.py` fails if the workflow and
+`app/version.py` ever disagree.
 
-The helper is built against a pinned `ppy.osu.Game`, and lazer's realm schema changes with
-it: when a lazer update moves the schema, bump the package versions in
-`tools/LazerDb/LazerDb.csproj`, tag a release, and existing installs pick the new helper up
-through **Setup** in the header (the app refuses to write into a database it does not
-match).
+The helper is pinned to a `ppy.osu.Game` version, and lazer's realm schema moves with it: when
+a lazer update moves the schema, bump `tools/LazerDb/LazerDb.csproj`, tag a release, and
+installs pick the new helper up through **Setup** in the header — the app refuses to write
+into a database it does not match.
 
-## Notes from building this
+## Notes
 
-* **Importing maps outside the game needs the ruleset assemblies.** Without them the
-  legacy `.osu` decoder cannot instantiate a game mode and *every* map fails to parse —
-  which surfaces as `No valid beatmap files found in the beatmap archive`, pointing at
-  the archive instead of the missing rulesets (that message is thrown when the parsed
-  beatmap list comes out empty, not when the zip is bad). Hence the four
-  `ppy.osu.Game.Rulesets.*` package references in `tools/LazerDb`.
-* **lazer deletes archives it imports** (`ShouldDeleteArchive`), which is what frees the
-  space as the import runs.
-* An archive that already exists in lazer counts as imported (lazer's "skip import" path)
-  and still gets deleted — that is how a re-run over the same folder works, and it is
-  idempotent: the realm's beatmapset count only moves for maps that were genuinely new.
-* **Deletion is gated on the helper's report**, per file: anything in `failed_files` stays
-  on disk, and a job that fails before importing deletes nothing at all.
-* **A busy osu!lazer ignores a graceful close.** `taskkill` without `/F` reports
-  `SUCCESS: Sent termination signal` while the game keeps running through a long library
-  scan (and a bare `WM_CLOSE` posted at its SDL window does nothing either), so the app
-  escalates to `/F` after ~12 s instead of pretending the close worked.
-* lazer's own IPC import is one path per message (`ArchiveImportIPCChannel`), which is why
-  going *through* the running game means one import task and ~1 s per map. Handled
-  extensions are `.osz .olz .osk .osr` only — a bare `collection.db` is accepted silently
-  and ignored, collections only enter through the realm.
-* File drops at the game don't work as an alternative: lazer is built on SDL3, which takes
-  drops through OLE `IDropTarget`, **not** `WM_DROPFILES` — posting a drop at its window
-  does nothing (and Windows refuses cross-process `PostMessage(WM_DROPFILES)` with
-  `ERROR_INVALID_HANDLE` anyway).
-* Some mirrors redirect to each other (catboy.best ↔ beatconnect), a few rate-limit
-  after a burst (per-mirror cooldowns are automatic; a slow mirror is dropped after 30s
-  below 25 KB/s so it can't stall a run), and `nzbasic` ships disabled because it
-  returned non-archive bodies when probed.
-* Proxies/AV can briefly lock a freshly written archive on Windows; the move-into-place
-  step retries and falls back to copy, and the file-lock case is never blamed on the mirror.
-* lazer's realm schema version is checked at runtime against the installed game
-  (`RealmAccess.schema_version`): the helper refuses to write if they differ, rather than
-  risking a database the game can't open.
+* Importing outside the game needs the ruleset assemblies: without them the `.osu` decoder
+  cannot instantiate a game mode and every map fails with `No valid beatmap files found in
+  the beatmap archive` — a message about the archive that is really about missing rulesets.
+* Lazer's IPC import carries one path per message, so going *through* the running game is
+  always one map at a time. That is the reason the helper exists.
+* An archive already in lazer counts as imported and is still deleted, which makes a re-run
+  over the same folder idempotent.
+* Deletion is gated per file on the helper's report: anything in `failed_files` stays on disk,
+  and a job that fails before importing deletes nothing at all.
+* A busy osu!lazer ignores a graceful close — `taskkill` without `/F` reports success while
+  the game keeps scanning — hence the escalation, and the log line that tells you.
+* Mirror quirks are handled automatically: redirects between mirrors, rate limits with
+  cooldowns, and a slow mirror dropped after 30 s below 25 KB/s. `nzbasic` ships disabled
+  because it answered with non-archives when probed.
 
-## If you'd rather not use an app
+## Alternatives
 
-The free route without this tool: [osu-collect](https://github.com/uwuclxdy/osu-collect)
-(TUI) downloads a collection to a folder exactly like this app does, and lazer's
-import screen takes the collection from it. The official osu!Collector desktop app
-(paid) states that lazer collection integration is *not* supported, so lazer's own
-import screen or this app are the only routes.
-
-Also verified along the way, so nobody has to rediscover it: [osu-import](https://github.com/R3dWolfie/osu-import)
-feeds files to a running lazer, but it goes through the same one-path-per-message IPC
-forward, so it is one task per map and ~1 s per map.
+[osu-collect](https://github.com/uwuclxdy/osu-collect) (TUI) downloads a collection to a
+folder and lazer's import screen takes it from there — the same route this app automates. The
+official osu!Collector desktop app (paid) does not support lazer collections at all.
 
 ## Credits
 
-Built against [ppy/osu](https://github.com/ppy/osu) (the helper drives its real import
-code paths — `BeatmapImporter`, `LegacyCollectionImporter`, `ShouldDeleteArchive`) and
-using mirror URL templates established by
-[osu-collect](https://github.com/uwuclxdy/osu-collect). Beatmap data comes from
-[osu!collector](https://osucollector.com/) and the public mirrors, not from this project.
+Built against [ppy/osu](https://github.com/ppy/osu) — the helper drives its real import code
+paths (`BeatmapImporter`, `LegacyCollectionImporter`, `ShouldDeleteArchive`) — and using mirror
+URL templates established by [osu-collect](https://github.com/uwuclxdy/osu-collect). Beatmap
+data comes from [osu!collector](https://osucollector.com/) and the public mirrors, not from
+this project.
 
 Unofficial: not affiliated with osu!, ppy Pty Ltd, or osu!collector.
 
