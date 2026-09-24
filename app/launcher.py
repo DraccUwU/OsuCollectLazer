@@ -1,14 +1,26 @@
 """Entry point for the packaged app (PyInstaller).
 
-A windowed build has no console, so `print()` would fail outright and a crash would
-vanish: stdout/stderr go to `app.log` in the app data dir first, fatal errors surface in
-a message box, and starting a second copy just opens the copy that is already running.
+`OsuCollectLazer.exe` starts the local server in a thread and opens it in a real window
+(Edge WebView2 through pywebview). It is deliberately forgiving: with no pywebview, no
+WebView2 runtime, or with `--browser`, it opens the default browser instead, so the app
+always starts.
+
+A windowed build has no console either, so stdout/stderr go to app.log first, fatal
+errors surface in a message box, and a second copy opens the copy that is already
+running rather than fighting over the port.
 """
 from __future__ import annotations
 
 import sys
+import threading
 import urllib.request
 import webbrowser
+
+WINDOW_TITLE = "OsuCollectLazer"
+WINDOW_SIZE = (1180, 800)
+WINDOW_MIN = (940, 620)
+# matches the UI's own background, so opening the window does not flash white
+WINDOW_BG = "#0d1116"
 
 
 def _log_stream():
@@ -25,7 +37,7 @@ def _message_box(text: str) -> None:
     try:
         import ctypes
 
-        ctypes.windll.user32.MessageBoxW(None, text, "OsuCollectLazer", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, text, WINDOW_TITLE, 0x10)
     except Exception:
         pass
 
@@ -58,6 +70,65 @@ def _running_url(port: int) -> str | None:
     return None
 
 
+class _JsApi:
+    """Just enough for the page to tell it is inside the app window (see app.js)."""
+
+    def app_window(self) -> bool:
+        return True
+
+
+def _dark_title_bar() -> None:
+    """Windows 11 paints a light title bar unless the app asks for the dark one.
+
+    Runs on pywebview's startup thread, because the window has to exist before it can be
+    found; harmless when the API is missing (older Windows, no DWM).
+    """
+    import ctypes
+    import time
+
+    DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+    for _ in range(60):
+        hwnd = ctypes.windll.user32.FindWindowW(None, WINDOW_TITLE)
+        if hwnd:
+            value = ctypes.c_int(1)
+            try:
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(value), ctypes.sizeof(value)
+                )
+            except Exception:
+                pass
+            return
+        time.sleep(0.1)
+
+
+def _open_window(url: str) -> bool:
+    """Show `url` in a native window; False when that is not possible."""
+    try:
+        import webview
+    except Exception as exc:
+        print(f"no window toolkit ({type(exc).__name__}: {exc}) — using the browser")
+        return False
+
+    created = False
+    try:
+        webview.create_window(
+            WINDOW_TITLE,
+            url,
+            js_api=_JsApi(),
+            width=WINDOW_SIZE[0],
+            height=WINDOW_SIZE[1],
+            min_size=WINDOW_MIN,
+            background_color=WINDOW_BG,
+            text_select=True,
+        )
+        created = True
+        webview.start(_dark_title_bar)  # the callback gets its own thread; returns on close
+        return True
+    except Exception as exc:
+        print(f"window failed ({type(exc).__name__}: {exc}) — using the browser")
+        return created  # a window may already be up: do not open a browser on top of it
+
+
 def main() -> int:
     stream = _log_stream()
     if stream is not None:
@@ -70,16 +141,37 @@ def main() -> int:
         _message_box(f"OsuCollectLazer could not start:\n\n{type(exc).__name__}: {exc}")
         return 1
 
+    argv = sys.argv[1:]
+    port = _cli_port(argv) or int(config.load_settings().get("port", 8765))
+    url = f"http://127.0.0.1:{port}/"
     print(f"\n--- OsuCollectLazer {version.__version__} ---")
-    port = _cli_port(sys.argv[1:]) or int(config.load_settings().get("port", 8765))
-    already = _running_url(port)
-    if already:
-        print(f"already running at {already} — opening it")
-        webbrowser.open(already)
+
+    running = _running_url(port)
+    if running:
+        print(f"already running at {running}")
+        if "--browser" in argv or not _open_window(running):
+            webbrowser.open(running)
         return 0
 
+    if "--browser" in argv:
+        return server.main(argv)  # the plain flow: serve, hand the URL to the browser
+
+    httpd = server.bind(port)
+    if httpd is None:
+        print(f"could not bind {url} — is another copy running?")
+        webbrowser.open(url)
+        return 1
+
+    http = threading.Thread(target=httpd.serve_forever, name="ocl-http", daemon=True)
+    http.start()
+    print(f"serving {url} (closing the window stops the app)")
+
     try:
-        code = server.main(sys.argv[1:])
+        if not _open_window(url):
+            webbrowser.open(url)
+            http.join()  # no window possible: keep serving until Ctrl+C
+    except KeyboardInterrupt:
+        pass
     except Exception as exc:
         print(f"fatal: {type(exc).__name__}: {exc}")
         _message_box(
@@ -87,10 +179,11 @@ def main() -> int:
             "app.log next to your settings has the details."
         )
         return 1
-    if code != 0:
-        # could not bind: a running copy is the usual reason — show that one instead
-        webbrowser.open(f"http://127.0.0.1:{port}/")
-    return code
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+    print("bye")
+    return 0
 
 
 if __name__ == "__main__":

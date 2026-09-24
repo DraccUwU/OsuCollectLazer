@@ -3,6 +3,21 @@
 const $ = (sel) => document.querySelector(sel);
 const state = { page: 1, query: '', hasNext: false, settings: {}, tick: 0, running: false };
 
+// In the app window (pywebview) the page must not navigate away from itself, so every
+// link that leaves the app goes through the server, which hands it to the real browser.
+function inAppWindow() { return !!window.pywebview; }
+function externalLink(url) {
+  if (!inAppWindow()) return false;
+  api('/api/open', { url }).catch(() => {});
+  return true;
+}
+
+// shortcuts live on the server; the settings modal and the wizard both use these
+window.AppShortcuts = {
+  status: () => api('/api/shortcuts'),
+  create: (where) => api('/api/shortcuts', { where, action: 'create' }),
+};
+
 function esc(text) {
   return String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -89,7 +104,7 @@ function renderResults(data) {
         <div class="actions">
           <button class="small" data-fetch="${r.id}">Open</button>
           <button class="small ghost" data-download="${r.id}">Download</button>
-          <a class="link" href="${esc(r.url)}" target="_blank" rel="noreferrer" title="open on osu!collector">↗</a>
+          <a class="link" href="${esc(r.url)}" data-external="${esc(r.url)}" target="_blank" rel="noreferrer" title="open on osu!collector">↗</a>
         </div>
       </div>`
     )
@@ -157,7 +172,10 @@ function showDetail(c) {
       <span class="chip ghosty">archives deleted as they land</span>
       <span class="chip ghosty">game closed if open</span>
     </div>`;
-  $('#btn-site').onclick = () => window.open(`https://osucollector.com/collections/${c.id}`, '_blank', 'noreferrer');
+  $('#btn-site').onclick = () => {
+    const site = `https://osucollector.com/collections/${c.id}`;
+    if (!externalLink(site)) window.open(site, '_blank', 'noreferrer');
+  };
   $('#btn-dl').onclick = async () => {
     $('#btn-dl').disabled = true;
     $('#btn-dl').textContent = 'starting…';
@@ -422,8 +440,48 @@ function settingsModal() {
        <div class="mirrors">${mirrors.map((m) => `<label class="check" title="${m} — used for downloads when checked"><input type="checkbox" data-mirror="${m}" ${(s.mirrors || []).includes(m) ? 'checked' : ''}><span>${m}</span></label>`).join('')}</div>
        <div id="s-probe-out" class="chips"></div>
      </div>
+     <div class="group">
+       <div class="group-title">App</div>
+       <div class="chips" id="s-shortcuts"><span class="chip ghosty">checking…</span></div>
+       <div class="row" style="margin-top:8px">
+         <button class="small ghost" id="s-lnk-desktop" title="put a shortcut on the desktop">Desktop</button>
+         <button class="small ghost" id="s-lnk-startmenu" title="add it to the Start menu">Start menu</button>
+       </div>
+       <div class="hint" id="s-lnk-hint"></div>
+     </div>
      <div class="row right"><button id="s-save">Save</button></div>`
   );
+  const renderShortcuts = async () => {
+    const chips = $('#s-shortcuts');
+    if (!chips) return;
+    try {
+      const s = await window.AppShortcuts.status();
+      if (!s.available) {
+        chips.innerHTML = `<span class="chip ghosty">${esc(s.reason || 'shortcuts unavailable')}</span>`;
+        $('#s-lnk-desktop').disabled = true;
+        $('#s-lnk-startmenu').disabled = true;
+        return;
+      }
+      chips.innerHTML = Object.values(s.places)
+        .map((p) => `<span class="chip${p.exists ? ' ok' : ' ghosty'}">${esc(p.label)}${p.exists ? ' ✓' : ' —'}</span>`)
+        .join('');
+      $('#s-lnk-hint').textContent = s.target ? `opens ${s.target}` : '';
+    } catch (e) {
+      chips.innerHTML = `<span class="chip bad">${esc(e.message)}</span>`;
+    }
+  };
+  const addShortcut = async (where) => {
+    try {
+      await window.AppShortcuts.create(where);
+      toast('shortcut created', 'ok');
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+    renderShortcuts();
+  };
+  $('#s-lnk-desktop').onclick = () => addShortcut('desktop');
+  $('#s-lnk-startmenu').onclick = () => addShortcut('startmenu');
+  renderShortcuts();
   $('#s-probe').onclick = async () => {
     $('#s-probe-out').innerHTML = '<span class="chip ghosty">probing…</span>';
     try {
@@ -461,6 +519,11 @@ function settingsModal() {
 }
 
 // ---------------------------------------------------------------- wiring
+document.addEventListener('click', (ev) => {
+  const link = ev.target.closest('[data-external]');
+  if (link && externalLink(link.dataset.external)) ev.preventDefault();
+});
+
 document.addEventListener('click', async (ev) => {
   const t = ev.target.closest('[data-fetch],[data-download],[data-open],[data-cancel],[data-finalize],[data-writecoll]');
   if (!t) return;

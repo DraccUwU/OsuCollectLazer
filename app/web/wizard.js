@@ -137,7 +137,12 @@
         ${pick.no_video ? '<span class="chip ghosty">no video</span>' : ''}
         ${pick.verify_zips ? '<span class="chip ghosty">verify archives</span>' : ''}
         ${pick.close_lazer_before_import ? '<span class="chip ghosty">lazer closed automatically</span>' : ''}
-      </div>`;
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="ghost small" id="w-lnk-desktop" title="put a shortcut on the desktop">Desktop shortcut</button>
+        <button class="ghost small" id="w-lnk-startmenu" title="add it to the Start menu">Start menu</button>
+      </div>
+      <div class="chips" id="w-shortcuts"></div>`;
   }
 
   function footer() {
@@ -198,6 +203,32 @@
     });
     on('w-browse-file', () => browse('file', '#w-exe'));
     on('w-browse-dir', () => browse('folder', '#w-dir'));
+    const renderShortcutChips = async () => {
+      const chips = document.getElementById('w-shortcuts');
+      if (!chips) return;
+      try {
+        const s = await window.AppShortcuts.status();
+        chips.innerHTML = s.available
+          ? Object.values(s.places)
+            .map((p) => `<span class="chip${p.exists ? ' ok' : ' ghosty'}">${esc(p.label)}${p.exists ? ' ✓' : ' —'}</span>`)
+            .join('')
+          : `<span class="chip ghosty">${esc(s.reason || 'shortcuts unavailable')}</span>`;
+      } catch (e) {
+        chips.innerHTML = `<span class="chip bad">${esc(e.message)}</span>`;
+      }
+    };
+    const addShortcut = async (where) => {
+      try {
+        await window.AppShortcuts.create(where);
+        note('shortcut created', 'ok');
+      } catch (e) {
+        note(e.message, 'bad');
+      }
+      renderShortcutChips();
+    };
+    on('w-lnk-desktop', () => addShortcut('desktop'));
+    on('w-lnk-startmenu', () => addShortcut('startmenu'));
+    renderShortcutChips();
     on('w-download', () => install('download'));
     on('w-build', () => install('build'));
   }

@@ -21,7 +21,7 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from app import config, launcher, lazerdb, server, setup, version  # noqa: E402
+from app import config, launcher, lazerdb, server, setup, shortcuts, version  # noqa: E402
 
 
 class FakeResponse:
@@ -289,6 +289,111 @@ class LauncherTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=5)
+
+
+class ShortcutTests(unittest.TestCase):
+    """Shortcuts, without ever touching the real desktop or Start menu."""
+
+    def test_the_target_is_the_exe_when_frozen_and_start_bat_from_a_checkout(self):
+        self.assertEqual(shortcuts.shortcut_target(), REPO / "start.bat")
+        with mock.patch.object(sys, "frozen", True, create=True), mock.patch.object(
+            sys, "executable", r"C:\Apps\OsuCollectLazer\OsuCollectLazer.exe"
+        ):
+            self.assertEqual(shortcuts.shortcut_target(), Path(r"C:\Apps\OsuCollectLazer\OsuCollectLazer.exe"))
+
+    @staticmethod
+    def _read_back(lnk: Path) -> dict:
+        script = (
+            "$shell = New-Object -ComObject WScript.Shell\n"
+            f"$lnk = $shell.CreateShortcut({shortcuts._quote(lnk)})\n"
+            "Write-Output (ConvertTo-Json -Compress @{ target = $lnk.TargetPath; workdir = $lnk.WorkingDirectory })"
+        )
+        proc = shortcuts._powershell(script)
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    def test_a_shortcut_is_really_written_and_windows_reads_it_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lnk = Path(tmp) / "OsuCollectLazer.lnk"
+            target = (REPO / "start.bat").resolve()
+            shortcuts.write_shortcut(lnk, target, "test shortcut")
+            self.assertTrue(lnk.exists(), "no .lnk written")
+            read = self._read_back(lnk)
+            self.assertEqual(read["target"].lower(), str(target).lower())
+            self.assertEqual(read["workdir"].lower(), str(target.parent).lower())
+
+    def test_status_asks_windows_for_both_places(self):
+        status = shortcuts.status()
+        self.assertTrue(status["available"], status.get("reason"))
+        self.assertEqual(set(status["places"]), {"desktop", "startmenu"})
+        for place in status["places"].values():
+            self.assertTrue(place["path"].endswith("OsuCollectLazer.lnk"))
+            self.assertIsInstance(place["exists"], bool)
+
+    def test_a_bad_place_is_refused_before_powershell_runs(self):
+        for call in (shortcuts.create, shortcuts.remove):
+            with self.assertRaises(ValueError):
+                call("taskbar")
+
+    def test_no_target_means_no_shortcut(self):
+        with mock.patch.object(shortcuts, "shortcut_target", return_value=None):
+            with self.assertRaises(RuntimeError):
+                shortcuts.create("desktop")
+            self.assertFalse(shortcuts.status()["available"])
+
+
+class ShortcutApiTests(unittest.TestCase):
+    def test_get_reports_the_places(self):
+        code, body = server.api_get("/api/shortcuts", {})
+        self.assertEqual(code, 200)
+        self.assertIn("places", body)
+
+    def test_post_refuses_unknown_places_and_actions(self):
+        self.assertEqual(server.api_post("/api/shortcuts", {"where": "taskbar"})[0], 400)
+        self.assertEqual(server.api_post("/api/shortcuts", {"where": "desktop", "action": "explode"})[0], 400)
+
+    def test_the_route_creates_and_removes_a_shortcut(self):
+        """End to end, with the shell folders faked into a temp directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = {"desktop": Path(tmp) / "Desktop.lnk", "startmenu": Path(tmp) / "Start.lnk"}
+            with mock.patch.object(shortcuts, "places", return_value=fake):
+                code, body = server.api_post("/api/shortcuts", {"where": "desktop", "action": "create"})
+                self.assertEqual(code, 200, body)
+                self.assertTrue(fake["desktop"].exists())
+                self.assertIn("status", body)
+                code, body = server.api_post("/api/shortcuts", {"where": "desktop", "action": "remove"})
+                self.assertEqual(code, 200, body)
+                self.assertFalse(fake["desktop"].exists())
+                code, body = server.api_post("/api/shortcuts", {"where": "desktop", "action": "remove"})
+                self.assertEqual(code, 200, body)
+                self.assertFalse(body["removed"])
+
+
+class OpenLinkTests(unittest.TestCase):
+    """Links from the app window go to the real browser — and only http(s) ones do."""
+
+    def test_only_http_links_are_opened(self):
+        with mock.patch.object(server.webbrowser, "open") as opener:
+            for bad in ("file:///C:/Windows/system32/calc.exe", "javascript:alert(1)", "C:/Windows", ""):
+                if bad == "":
+                    continue  # empty means "open a folder", handled elsewhere
+                code, body = server.api_post("/api/open", {"url": bad})
+                self.assertEqual(code, 400, f"{bad} was accepted")
+            opener.assert_not_called()
+            code, body = server.api_post("/api/open", {"url": "https://osucollector.com/collections/2179"})
+            self.assertEqual(code, 200, body)
+            opener.assert_called_once_with("https://osucollector.com/collections/2179")
+
+
+class BindTests(unittest.TestCase):
+    def test_bind_takes_a_free_port_and_gives_up_on_a_taken_one(self):
+        first = server.bind(0)
+        self.assertIsNotNone(first, "could not bind an ephemeral port")
+        try:
+            port = first.server_address[1]
+            self.assertIsNone(server.bind(port), "a second bind on the same port should fail")
+        finally:
+            first.server_close()
 
 
 if __name__ == "__main__":

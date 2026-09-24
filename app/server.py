@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import collectiondb, collector, config, lazer, lazerdb, library, setup, version
+from . import collectiondb, collector, config, lazer, lazerdb, library, setup, shortcuts, version
 from .downloader import DownloadJob, Downloader
 from .mirrors import MIRRORS, MirrorPool
 
@@ -637,6 +637,8 @@ def delete_library(scope: str = "all", folder: str | None = None, dry_run: bool 
 def api_get(path: str, query: dict) -> tuple[int, dict]:
     if path == "/api/setup":
         return 200, setup.state()
+    if path == "/api/shortcuts":
+        return 200, shortcuts.status()
     if path == "/api/status":
         return 200, {
             "version": version.__version__,
@@ -789,7 +791,28 @@ def api_post(path: str, body: dict) -> tuple[int, dict]:
             return 400, {"error": f"{type(exc).__name__}: {exc}"}
         library.record_import(folder, collection=result.get("changed"), imported=0, deleted=0, freed=0, failed=0, notes=[])
         return 200, {"changed": result.get("changed"), "backup": result.get("backup")}
+    if path == "/api/shortcuts":
+        where = str(body.get("where") or "")
+        action = str(body.get("action") or "create")
+        if action not in ("create", "remove"):
+            return 400, {"error": "action must be create or remove"}
+        try:
+            result = shortcuts.create(where) if action == "create" else shortcuts.remove(where)
+        except ValueError as exc:
+            return 400, {"error": str(exc)}
+        except RuntimeError as exc:
+            return 409, {"error": str(exc)}
+        except Exception as exc:
+            return 500, {"error": f"{type(exc).__name__}: {exc}"}
+        return 200, {**result, "status": shortcuts.status()}
     if path == "/api/open":
+        link = str(body.get("url") or "")
+        if link:
+            # the app window cannot show a website: send links to the real browser
+            if not link.lower().startswith(("http://", "https://")):
+                return 400, {"error": "only http(s) links can be opened"}
+            webbrowser.open(link)
+            return 200, {"opened": link}
         folder = Path(str(body.get("folder") or ""))
         if not _is_collection_folder(folder):
             return 403, {"error": "folder must be a collection folder inside the download directory"}
@@ -955,6 +978,14 @@ class Server(ThreadingHTTPServer):
     allow_reuse_address = False
 
 
+def bind(port: int) -> Server | None:
+    """Take the port, or None when something else already holds it."""
+    try:
+        return Server(("127.0.0.1", port), Handler)
+    except OSError:
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     port = int(SETTINGS.get("port", 8765))
     argv = argv if argv is not None else []
@@ -963,11 +994,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if "--port" in argv:
         port = int(argv[argv.index("--port") + 1])
-    try:
-        server = Server(("127.0.0.1", port), Handler)
-    except OSError as exc:
+    server = bind(port)
+    if server is None:
         url = f"http://127.0.0.1:{port}/"
-        print(f"Could not bind {url} ({exc}).")
+        print(f"Could not bind {url} (port in use).")
         print("Another OsuCollectLazer is probably already running — just open the URL above.")
         return 1
     url = f"http://127.0.0.1:{port}/"

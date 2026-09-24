@@ -6,7 +6,7 @@ so the wizard can never look for an asset the release does not publish.
 """
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 REPO = "DraccUwU/OsuCollectLazer"
 RELEASES_URL = f"https://github.com/{REPO}/releases"

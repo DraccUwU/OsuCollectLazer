@@ -21,6 +21,11 @@ Download the latest release, unzip it, run OsuCollectLazer.exe
    from the matching release) and asks where downloads should go. That is the whole
    install: no Python, no .NET, nothing to compile.
 
+The app runs in its own window (Edge WebView2), not a browser tab; the last wizard step and
+*Settings → App* can put a shortcut on your **desktop** or in the **Start menu**. If
+WebView2 is missing, or you pass `--browser`, it opens your default browser instead —
+either way the UI is the same local page.
+
 Windows may show "Windows protected your PC" the first time, because the exe is not
 code-signed: *More info → Run anyway*.
 
@@ -38,6 +43,9 @@ dotnet build -c Release tools/LazerDb
 # run it
 start.bat            # or:  python -m app.server
 ```
+
+From source the UI opens in a browser tab — the native window needs pywebview, which only
+the release bundles. In the packaged app `--browser` forces that browser path too.
 
 Then paste a collection link (or search osu!collector) and hit **Download** — the maps are
 imported and deleted as they arrive, and the collection appears in lazer. Everything is

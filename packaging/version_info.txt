@@ -2,8 +2,8 @@
 # Keep the four-part versions in step with app/version.py.
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 1, 0, 0),
+    prodvers=(1, 1, 0, 0),
     mask=0x3F,
     flags=0x0,
     OS=0x40004,
@@ -19,12 +19,12 @@ VSVersionInfo(
           [
             StringStruct("CompanyName", "DraccUwU"),
             StringStruct("FileDescription", "OsuCollectLazer - osu!collector collections into osu!lazer"),
-            StringStruct("FileVersion", "1.0.0.0"),
+            StringStruct("FileVersion", "1.1.0.0"),
             StringStruct("InternalName", "OsuCollectLazer"),
             StringStruct("LegalCopyright", "MIT licence"),
             StringStruct("OriginalFilename", "OsuCollectLazer.exe"),
             StringStruct("ProductName", "OsuCollectLazer"),
-            StringStruct("ProductVersion", "1.0.0.0"),
+            StringStruct("ProductVersion", "1.1.0.0"),
           ],
         )
       ],

@@ -16,8 +16,16 @@ a = Analysis(  # noqa: F821
     binaries=[],
     # the web UI is read at runtime from the bundle (config.resource_dir)
     datas=[(str(ROOT / "app" / "web"), "app/web")],
-    # the folder picker is imported inside a function, so name it explicitly
-    hiddenimports=["tkinter", "tkinter.filedialog"],
+    # imported inside functions, so name them explicitly: the folder picker, and the
+    # window (pywebview + its WebView2 backend through pythonnet)
+    hiddenimports=[
+        "tkinter",
+        "tkinter.filedialog",
+        "webview",
+        "webview.platforms.edgechromium",
+        "clr_loader",
+        "pythonnet",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

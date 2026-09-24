@@ -44,8 +44,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: install PyInstaller
-        run: python -m pip install --upgrade pip pyinstaller
+      - name: install PyInstaller and the window toolkit
+        run: python -m pip install --upgrade pip pyinstaller pywebview
       - name: freeze the app
         run: python -m PyInstaller --noconfirm packaging/OsuCollectLazer.spec
       - name: add the docs to the folder that gets zipped
