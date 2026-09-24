@@ -62,10 +62,20 @@ def helper_zip(entries: dict[str, bytes] | None = None) -> bytes:
 
 
 class VersionTests(unittest.TestCase):
-    def test_the_release_workflow_publishes_what_the_wizard_downloads(self) -> None:
+    def test_the_release_workflow_publishes_what_the_wizard_downloads(self):
         workflow = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn(version.HELPER_ASSET, workflow)
         self.assertIn(version.APP_ASSET, workflow)
+
+    def test_the_release_ships_all_four_downloads(self):
+        """Installer, single file, portable zip, helper — and each one named exactly once
+        in the upload list, so nothing silently stops being published."""
+        workflow = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        for asset in (version.SETUP_ASSET, version.SINGLE_ASSET, version.APP_ASSET, version.HELPER_ASSET):
+            self.assertIn(asset, workflow, f"{asset} is not published")
+        installer = (REPO / "packaging" / "installer.iss").read_text(encoding="utf-8")
+        self.assertIn("OsuCollectLazer-Setup", installer)
+        self.assertIn(version.__version__.rsplit(".", 1)[0], installer)  # default version tracks the app
         self.assertIn(version.__version__, (REPO / "app" / "version.py").read_text(encoding="utf-8"))
 
     def test_the_api_url_follows_the_repo_constant(self) -> None:
@@ -289,6 +299,31 @@ class LauncherTests(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=5)
+
+
+class HelperLocationTests(unittest.TestCase):
+    """Where a downloaded helper lands, including a read-only install directory."""
+
+    def test_a_checkout_always_uses_the_project_folder(self):
+        self.assertEqual(lazerdb._helper_base(), REPO / "tools" / "LazerDb")
+
+    def test_a_frozen_build_prefers_its_own_folder_then_app_data(self):
+        fake_bundle = Path(r"C:\Apps\OsuCollectLazer")
+        with mock.patch.object(lazerdb.config, "bundle_dir", return_value=fake_bundle):
+            with mock.patch.object(lazerdb, "_writable", return_value=True):
+                self.assertEqual(lazerdb._helper_base(), fake_bundle / "tools" / "LazerDb")
+            with mock.patch.object(lazerdb, "_writable", return_value=False), mock.patch.object(
+                lazerdb.config, "app_dir", return_value=Path(r"C:\Users\x\AppData\Local\OsuCollectLazer")
+            ), mock.patch.object(sys, "frozen", True, create=True):
+                self.assertEqual(
+                    lazerdb._helper_base(),
+                    Path(r"C:\Users\x\AppData\Local\OsuCollectLazer\tools\LazerDb"),
+                )
+
+    def test_writable_really_probes_the_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(lazerdb._writable(Path(tmp) / "nested" / "deeper"))
+            self.assertFalse((Path(tmp) / "nested" / "deeper" / ".write-test").exists())
 
 
 class ShortcutTests(unittest.TestCase):

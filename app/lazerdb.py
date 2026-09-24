@@ -28,8 +28,30 @@ BACKUP_KEEP = 5
 TIMEOUT = 900
 
 
+def _writable(path: Path) -> bool:
+    """True when a downloaded helper could actually live there."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write-test"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def _helper_base() -> Path:
-    return config.bundle_dir() / "tools" / "LazerDb"
+    """Next to the app when that is writable, otherwise in app data.
+
+    An all-users install under Program Files cannot be written to by the app, so the
+    downloaded helper goes to %LOCALAPPDATA%\OsuCollectLazer\tools\LazerDb instead. A
+    source checkout always uses the project's own tools/LazerDb, where `dotnet build`
+    puts its output.
+    """
+    bundled = config.bundle_dir() / "tools" / "LazerDb"
+    if not getattr(sys, "frozen", False) or _writable(bundled):
+        return bundled
+    return config.app_dir() / "tools" / "LazerDb"
 
 
 def helper_candidates() -> list[Path]:

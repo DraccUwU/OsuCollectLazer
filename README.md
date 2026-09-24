@@ -13,13 +13,17 @@ Download the latest release, unzip it, run OsuCollectLazer.exe
 
 ## Install (Windows)
 
-1. Grab `OsuCollectLazer-win-x64.zip` from the
-   [latest release](https://github.com/DraccUwU/OsuCollectLazer/releases) and unzip it
-   anywhere you like.
-2. Run **OsuCollectLazer.exe** — the browser opens on its own.
-3. The **setup wizard** finds osu!lazer, installs the import helper (about 70 MB, fetched
-   from the matching release) and asks where downloads should go. That is the whole
-   install: no Python, no .NET, nothing to compile.
+Everything on the [latest release](https://github.com/DraccUwU/OsuCollectLazer/releases) —
+no Python, no .NET, nothing to compile either way:
+
+| Download | What it is |
+|---|---|
+| `OsuCollectLazer-Setup.exe` | **recommended**: installs in one go (no admin prompt), adds Start-menu and desktop shortcuts, and uninstalls from *Apps & features* |
+| `OsuCollectLazer-win-x64.zip` | portable: unzip anywhere and run the exe. Starts instantly; good for a USB stick |
+| `OsuCollectLazer.exe` | a single file with nothing to unzip, but it unpacks itself into `%TEMP%` on *every* launch — with real-time antivirus the first window can take a minute or more |
+
+Then the **setup wizard** finds osu!lazer, installs the import helper (about 70 MB, one
+time, fetched from the matching release) and asks where downloads should go.
 
 The app runs in its own window (Edge WebView2), not a browser tab; the last wizard step and
 *Settings → App* can put a shortcut on your **desktop** or in the **Start menu**. If
@@ -234,9 +238,12 @@ properties). Bump both, then:
 git tag v1.0.0 && git push origin v1.0.0
 ```
 
-`.github/workflows/release.yml` then builds the frozen app (`OsuCollectLazer-win-x64.zip`,
-about 11 MB) and the self-contained helper (`LazerDb-win-x64.zip`, about 65 MB — the full
-publish is 170 MB) and attaches both to the release. Before zipping, the workflow deletes
+`.github/workflows/release.yml` then builds and attaches four downloads: the installer
+(`OsuCollectLazer-Setup.exe`, compiled with Inno Setup 6.7.3, pinned in the workflow), the
+single-file build (`OsuCollectLazer.exe`), the portable build
+(`OsuCollectLazer-win-x64.zip`, about 11 MB) and the self-contained helper
+(`LazerDb-win-x64.zip`, about 65 MB — the full publish is 170 MB). The installer's version
+is passed in from `app/version.py`, so the two cannot drift apart. Before zipping, the workflow deletes
 `osu.Game.Resources.dll` (128 MB of fonts and textures for lazer's own UI, which the
 headless import never loads — verified against version detection, a realm read and a real
 map import into a copied realm).

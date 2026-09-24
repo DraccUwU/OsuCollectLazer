@@ -46,16 +46,32 @@ jobs:
           python-version: "3.12"
       - name: install PyInstaller and the window toolkit
         run: python -m pip install --upgrade pip pyinstaller pywebview
-      - name: freeze the app
-        run: python -m PyInstaller --noconfirm packaging/OsuCollectLazer.spec
+      - name: freeze the app (folder build - what the installer and the portable zip use)
+        run: python -m PyInstaller --noconfirm --distpath dist-portable packaging/OsuCollectLazer.spec
+      - name: freeze the single-file build
+        run: python -m PyInstaller --noconfirm --distpath dist-single packaging/OsuCollectLazer-onefile.spec
       - name: add the docs to the folder that gets zipped
-        run: Copy-Item README.md, LICENSE dist/OsuCollectLazer/
-      - name: zip the app
-        run: Compress-Archive -Path dist/OsuCollectLazer -DestinationPath OsuCollectLazer-win-x64.zip
+        run: Copy-Item README.md, LICENSE dist-portable/OsuCollectLazer/
+      - name: zip the portable build
+        run: Compress-Archive -Path dist-portable/OsuCollectLazer -DestinationPath OsuCollectLazer-win-x64.zip
+      - name: install Inno Setup (pinned, so the compiler version cannot drift)
+        run: |
+          curl.exe -sSL -o innosetup.exe https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+          Start-Process -FilePath .\innosetup.exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -Wait
+      - name: build the installer, version read from app/version.py
+        run: |
+          $version = (python -c "from app import version; print(version.__version__)").Trim()
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" "/DSourceDir=..\dist-portable\OsuCollectLazer" packaging\installer.iss
+      - name: collect the four things people download
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item dist-single\OsuCollectLazer.exe out\OsuCollectLazer.exe
+          Copy-Item dist-installer\OsuCollectLazer-Setup.exe out\OsuCollectLazer-Setup.exe
+          Copy-Item OsuCollectLazer-win-x64.zip out\
       - uses: actions/upload-artifact@v4
         with:
           name: app
-          path: OsuCollectLazer-win-x64.zip
+          path: out/*
 
   publish:
     needs: [helper, app]
@@ -66,7 +82,24 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          body: |
+            **Which download?**
+
+            * `OsuCollectLazer-Setup.exe` — recommended: installs per user (no admin prompt),
+              adds Start-menu and desktop shortcuts, and uninstalls cleanly. Starts instantly.
+            * `OsuCollectLazer-win-x64.zip` — portable: unzip anywhere and run the exe. Same
+              instant start. Good for a USB stick.
+            * `OsuCollectLazer.exe` — a single file, nothing to unzip. It unpacks itself into
+              `%TEMP%` on *every* launch, so with real-time antivirus enabled the first window
+              can take a minute or more. Use it when one file matters more than start-up time.
+            * `LazerDb-win-x64.zip` — the import helper. The app's setup wizard fetches this
+              itself on first run, so you only need it by hand on a machine without internet.
+
+            First run: a setup wizard finds osu!lazer, installs the helper (~70 MB, one time)
+            and asks where downloads should go. No Python, no .NET.
           files: |
+            OsuCollectLazer-Setup.exe
+            OsuCollectLazer.exe
             OsuCollectLazer-win-x64.zip
             LazerDb-win-x64.zip
           generate_release_notes: true

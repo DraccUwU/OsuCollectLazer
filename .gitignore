@@ -13,9 +13,12 @@ __pycache__/
 tools/LazerDb/bin/
 tools/LazerDb/obj/
 
-# packaging output (PyInstaller)
+# packaging output (PyInstaller, Inno Setup)
 build/
 dist/
+dist-portable/
+dist-single/
+dist-installer/
 
 # editors / OS
 .vscode/

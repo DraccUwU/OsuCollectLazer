@@ -12,5 +12,7 @@ REPO = "DraccUwU/OsuCollectLazer"
 RELEASES_URL = f"https://github.com/{REPO}/releases"
 LATEST_RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 
-HELPER_ASSET = "LazerDb-win-x64.zip"
-APP_ASSET = "OsuCollectLazer-win-x64.zip"
+HELPER_ASSET = "LazerDb-win-x64.zip"  # the wizard downloads this on first run
+APP_ASSET = "OsuCollectLazer-win-x64.zip"  # portable folder build
+SETUP_ASSET = "OsuCollectLazer-Setup.exe"  # installer
+SINGLE_ASSET = "OsuCollectLazer.exe"  # single-file build
