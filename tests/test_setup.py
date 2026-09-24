@@ -320,10 +320,13 @@ class HelperLocationTests(unittest.TestCase):
                     Path(r"C:\Users\x\AppData\Local\OsuCollectLazer\tools\LazerDb"),
                 )
 
-    def test_writable_really_probes_the_directory(self):
+    def test_writable_really_probes_without_creating_anything(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertTrue(lazerdb._writable(Path(tmp) / "nested" / "deeper"))
-            self.assertFalse((Path(tmp) / "nested" / "deeper" / ".write-test").exists())
+            # asking must not leave folders or probe files behind
+            self.assertFalse((Path(tmp) / "nested").exists())
+            self.assertTrue(lazerdb._writable(Path(tmp)))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
 
 class ShortcutTests(unittest.TestCase):

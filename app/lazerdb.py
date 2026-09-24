@@ -29,10 +29,19 @@ TIMEOUT = 900
 
 
 def _writable(path: Path) -> bool:
-    """True when a downloaded helper could actually live there."""
+    """True when a downloaded helper could be written there.
+
+    Checked against the nearest existing folder, so asking the question never creates
+    anything: a status check must not leave an empty `tools/` behind in an install
+    directory that a later uninstall would then not remove.
+    """
+    existing = path
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    if not existing.is_dir():
+        return False
     try:
-        path.mkdir(parents=True, exist_ok=True)
-        probe = path / ".write-test"
+        probe = existing / ".write-test"
         probe.write_text("", encoding="utf-8")
         probe.unlink()
         return True
